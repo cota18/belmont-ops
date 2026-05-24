@@ -22,23 +22,26 @@ def get_client() -> AsyncZep:
 
 
 async def ensure_user():
-    """Create Jacob's user profile in Zep if it doesn't exist."""
+    """Create Jacob's user profile in Zep if it doesn't exist. Non-fatal — bot works without memory."""
     zep = get_client()
     try:
         await zep.user.get(USER_ID)
     except Exception:
-        await zep.user.add(
-            user_id=USER_ID,
-            first_name="Jacob",
-            last_name="Cota",
-            email="jacob.cota1@gmail.com",
-            metadata={
-                "company": "Belmont & Co Fine Homes & Renovations",
-                "role": "Co-founder",
-                "location": "Red Deer, Alberta",
-                "focus": "premium renovations, custom homes, development"
-            }
-        )
+        try:
+            await zep.user.add(
+                user_id=USER_ID,
+                first_name="Jacob",
+                last_name="Cota",
+                email="jacob.cota1@gmail.com",
+                metadata={
+                    "company": "Belmont & Co Fine Homes & Renovations",
+                    "role": "Co-founder",
+                    "location": "Red Deer, Alberta",
+                    "focus": "premium renovations, custom homes, development"
+                }
+            )
+        except Exception as e:
+            print(f"[Zep] ensure_user failed (non-fatal): {e}")
 
 
 async def get_session_id(agent_type: str, chat_id: str) -> str:
