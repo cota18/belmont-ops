@@ -7,3 +7,4 @@ anthropic==0.40.0
 zep-cloud==2.6.0
 python-telegram-bot==21.6
 apscheduler==3.10.4
+packaging
