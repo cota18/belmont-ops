@@ -1,0 +1,12 @@
+[build]
+builder = "NIXPACKS"
+
+[[services]]
+name = "belmont-telegram"
+source = "telegram_handler"
+startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT"
+
+[[services]]
+name = "belmont-mcp"
+source = "mcp_server"
+startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT"
