@@ -50,16 +50,19 @@ async def get_session_id(agent_type: str, chat_id: str) -> str:
 
 
 async def ensure_session(session_id: str, agent_type: str):
-    """Create Zep session if it doesn't exist."""
+    """Create Zep session if it doesn't exist. Non-fatal — bot works without memory."""
     zep = get_client()
     try:
         await zep.memory.get_session(session_id)
     except Exception:
-        await zep.memory.add_session(
-            session_id=session_id,
-            user_id=USER_ID,
-            metadata={"agent_type": agent_type, "created": datetime.utcnow().isoformat()}
-        )
+        try:
+            await zep.memory.add_session(
+                session_id=session_id,
+                user_id=USER_ID,
+                metadata={"agent_type": agent_type, "created": datetime.utcnow().isoformat()}
+            )
+        except Exception as e:
+            print(f"[Zep] ensure_session failed (non-fatal): {e}")
 
 
 async def load_memory(session_id: str, query: str = None) -> str:
