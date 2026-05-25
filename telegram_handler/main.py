@@ -338,7 +338,13 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             "\n<b>Estimating</b>\n"
             "/quote [description] — Fast ballpark estimate\n"
             "  e.g. /quote 600sqft composite deck with glass railing\n"
-            "\n<b>Discipline + Memory</b>\n"
+            "/gst [amount] — Quick 5% GST math\n"
+            "\n<b>Memory Capture (explicit)</b>\n"
+            "/promise [task by when] — Log a commitment\n"
+            "/decision [what + why] — Log a major decision\n"
+            "/lesson [rule] — Log a hard-earned lesson\n"
+            "/who [name] — Recall everything I know about a contact\n"
+            "\n<b>Memory Recall</b>\n"
             "/promises — What I said I'd do (status check)\n"
             "/decisions — Major decisions logged + reasoning\n"
             "/lessons — Hard-earned rules from past jobs\n"
@@ -371,6 +377,77 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             )
             return JSONResponse({"ok": True})
         user_text = ESTIMATE_TEMPLATE_PROMPT + quote_input
+
+    # /gst — quick GST calculator (5% in Alberta)
+    elif text_lower.startswith("/gst"):
+        try:
+            import re
+            num_match = re.search(r'[\d,]+\.?\d*', user_text[len("/gst"):])
+            if not num_match:
+                await send_telegram(chat_id, "Format: /gst 47500")
+                return JSONResponse({"ok": True})
+            amount = float(num_match.group(0).replace(",", ""))
+            gst = amount * 0.05
+            total = amount + gst
+            await send_telegram(
+                chat_id,
+                f"<b>GST Math (Alberta 5%)</b>\n\n"
+                f"Subtotal: ${amount:,.2f}\n"
+                f"GST: ${gst:,.2f}\n"
+                f"<b>Total: ${total:,.2f}</b>"
+            )
+            return JSONResponse({"ok": True})
+        except Exception as e:
+            await send_telegram(chat_id, f"GST calc error: {e}")
+            return JSONResponse({"ok": True})
+
+    # /lesson, /decision, /promise — explicit memory logging
+    elif text_lower.startswith("/lesson"):
+        content = user_text[len("/lesson"):].strip()
+        if not content:
+            await send_telegram(chat_id, "Format: /lesson [hard-earned rule]\nEx: /lesson Confirm tile lead times >3 weeks before locking schedule")
+            return JSONResponse({"ok": True})
+        user_text = (
+            f"Jacob is logging a hard-earned lesson from his business. Capture this in Zep memory "
+            f"explicitly so future sessions can recall it. Lesson: \"{content}\". "
+            f"Confirm what was saved in one line."
+        )
+
+    elif text_lower.startswith("/decision"):
+        content = user_text[len("/decision"):].strip()
+        if not content:
+            await send_telegram(chat_id, "Format: /decision [what + why]\nEx: /decision Passed on Mitchell job — scope too vague, budget unclear")
+            return JSONResponse({"ok": True})
+        user_text = (
+            f"Jacob is logging a major business decision with reasoning. Store this in Zep "
+            f"memory so it's searchable later. Decision: \"{content}\". "
+            f"Confirm what was saved in one line."
+        )
+
+    elif text_lower.startswith("/promise") or text_lower.startswith("/commit"):
+        prefix_len = len("/promise") if text_lower.startswith("/promise") else len("/commit")
+        content = user_text[prefix_len:].strip()
+        if not content:
+            await send_telegram(chat_id, "Format: /promise [what + by when]\nEx: /promise Call Henderson by Wednesday")
+            return JSONResponse({"ok": True})
+        user_text = (
+            f"Jacob is logging a commitment he's making. Store in Zep memory so morning briefs "
+            f"can surface this and check status. Commitment: \"{content}\". "
+            f"Parse the deadline if mentioned. Confirm what was saved in one line."
+        )
+
+    # /who [name] — full memory recall on a contact
+    elif text_lower.startswith("/who"):
+        name = user_text[len("/who"):].strip()
+        if not name:
+            await send_telegram(chat_id, "Format: /who [name]\nEx: /who Henderson")
+            return JSONResponse({"ok": True})
+        user_text = (
+            f"Search Zep memory deeply for everything Jacob knows about '{name}'. "
+            f"Include: jobs done together, conversations, preferences, budget signals, "
+            f"family info, decisions made, communication style. Format as a compact contact card. "
+            f"If nothing found, say so and ask Jacob if he wants to add notes about them."
+        )
 
     elif text_lower in QUICK_COMMANDS:
         user_text = QUICK_COMMANDS[text_lower]
