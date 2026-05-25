@@ -28,6 +28,11 @@ from memory.zep_memory import (
 app = FastAPI(title="Belmont Telegram Handler")
 
 from state import set_snooze, clear_snooze, is_snoozed, get_snooze_deadline
+from templates import (
+    list_templates, get_template,
+    list_sops, get_sop,
+    list_pricing, get_pricing
+)
 
 @app.on_event("startup")
 async def startup():
@@ -500,9 +505,13 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
 
     if text_lower == "/help":
         help_text = (
-            "<b>Belmont Ops Commands:</b>\n\n"
-            "<b>Business</b>\n"
+            "<b>BELMONT OPS — COMMANDS</b>\n\n"
+            "<b>Time Snapshots</b>\n"
+            "/today — What's on for today\n"
+            "/tomorrow — Tomorrow's prep + sleep question\n"
+            "/week — Week ahead snapshot\n"
             "/brief — Full morning briefing\n"
+            "\n<b>Business Data</b>\n"
             "/jobs — Active job list\n"
             "/estimates — Open estimates + pipeline\n"
             "/pipeline — Pipeline by age with flags\n"
@@ -510,37 +519,38 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             "/ads — Meta ad performance\n"
             "/recap — Full business snapshot\n"
             "/exit — Exit tracker (TopTick)\n"
-            "/weather — 3-day Red Deer forecast + outdoor work risk\n"
-            "\n<b>Estimating</b>\n"
+            "/weather — 3-day Red Deer forecast\n"
+            "\n<b>Estimating + Pricing</b>\n"
             "/quote [description] — Fast ballpark estimate\n"
-            "  e.g. /quote 600sqft composite deck with glass railing\n"
-            "/gst [amount] — Quick 5% GST math\n"
-            "\n<b>Memory Capture (explicit)</b>\n"
-            "/promise [task by when] — Log a commitment\n"
-            "/decision [what + why] — Log a major decision\n"
-            "/lesson [rule] — Log a hard-earned lesson\n"
-            "/who [name] — Recall everything I know about a contact\n"
-            "/expense [vendor amount category] — Log expense\n"
-            "/followup [name] — Quick client follow-up draft\n"
-            "\n<b>Control</b>\n"
-            "/snooze [hours] — DND window (default 2h)\n"
-            "/unsnooze — Cancel DND\n"
-            "\n<b>Memory Recall</b>\n"
-            "/promises — What I said I'd do (status check)\n"
-            "/decisions — Major decisions logged + reasoning\n"
-            "/lessons — Hard-earned rules from past jobs\n"
-            "/wins — Daily wins logged, momentum check\n"
-            "/network — Builders, subs, vendors, referrals\n"
+            "/pricing [key] — Quick rate reference\n"
+            "/gst [amount] — 5% GST math\n"
+            "\n<b>Templates + SOPs</b>\n"
+            "/template — Email/document templates\n"
+            "/sop — Operating procedures\n"
+            "\n<b>Capture (explicit memory)</b>\n"
+            "/promise [task by when] — Commitment\n"
+            "/decision [what + why] — Major decision\n"
+            "/lesson [rule] — Hard-earned rule\n"
+            "/idea [text] — Business idea\n"
+            "/blocker [text] — What's in the way\n"
+            "/risk [text] — Risk flag\n"
+            "/opp [text] — Opportunity\n"
+            "/expense [vendor amount cat] — Log expense\n"
+            "\n<b>Recall</b>\n"
+            "/promises /decisions /lessons /wins /network\n"
+            "/who [name] — Contact card\n"
+            "/followup [name] — Client follow-up draft\n"
             "\n<b>People</b>\n"
             "/subs — Subcontractor list\n"
             "/bjj — Log BJJ session\n"
+            "\n<b>Control</b>\n"
+            "/snooze [hours] — DND (default 2h, max 24h)\n"
+            "/unsnooze — Cancel DND\n"
             "\n<b>System</b>\n"
-            "/status — System health (lightweight)\n"
-            "/diagnostic — Full integration health report\n"
-            "/help — This menu\n\n"
-            "Or ask me anything in plain English.\n"
-            "Send a photo with 'receipt' in the caption to log an expense.\n"
-            "Send a voice memo and I'll transcribe + handle it."
+            "/diag — Full integration health\n"
+            "/next — Single next action with reasoning\n"
+            "/status — Light system health\n\n"
+            "Or just talk to me in plain English. Send photo, voice memo, anything."
         )
         await send_telegram(chat_id, help_text)
         return JSONResponse({"ok": True})
@@ -691,6 +701,128 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         clear_snooze(str(chat_id))
         await send_telegram(chat_id, "Snooze cleared. Back to normal.")
         return JSONResponse({"ok": True})
+
+    # /template — email/document template library
+    elif text_lower.startswith("/template"):
+        key = user_text[len("/template"):].strip()
+        if not key:
+            await send_telegram(chat_id, list_templates())
+        else:
+            await send_telegram(chat_id, get_template(key))
+        return JSONResponse({"ok": True})
+
+    # /sop — standard operating procedures
+    elif text_lower.startswith("/sop"):
+        key = user_text[len("/sop"):].strip()
+        if not key:
+            await send_telegram(chat_id, list_sops())
+        else:
+            await send_telegram(chat_id, get_sop(key))
+        return JSONResponse({"ok": True})
+
+    # /pricing — quick pricing reference
+    elif text_lower.startswith("/pricing"):
+        key = user_text[len("/pricing"):].strip()
+        if not key:
+            await send_telegram(chat_id, list_pricing())
+        else:
+            await send_telegram(chat_id, get_pricing(key))
+        return JSONResponse({"ok": True})
+
+    # /today — synthesized day snapshot
+    elif text_lower == "/today":
+        user_text = (
+            "Synthesize Jacob's day right now. Call these tools in parallel and assemble a short brief:\n"
+            "- google_calendar_today (if available)\n"
+            "- weather_red_deer_forecast (1 day)\n"
+            "- jobtread_list_jobs (status=active, top 5 by recency)\n"
+            "- Zep search for commitments due today\n\n"
+            "Format output as:\n"
+            "TODAY ([weekday, date])\n"
+            "Weather: [1 line]\n"
+            "Schedule: [calendar events or 'no calendar connected']\n"
+            "Active jobs to touch: [top 3]\n"
+            "Commitments due: [list or 'none tracked']\n"
+            "Single most important thing today: [your call]\n\n"
+            "Keep total under 200 words. No fluff."
+        )
+
+    # /tomorrow — next-day prep
+    elif text_lower == "/tomorrow":
+        user_text = (
+            "Set Jacob up for tomorrow. Pull:\n"
+            "- weather_red_deer_forecast for tomorrow\n"
+            "- Open estimates 5+ days old\n"
+            "- Active jobs needing client update Friday\n"
+            "- Commitments due tomorrow from memory\n\n"
+            "Format short. End with: 'Sleep on this: [one strategic question Jacob should consider overnight]'"
+        )
+
+    # /week — week ahead snapshot
+    elif text_lower == "/week":
+        user_text = (
+            "Generate Jacob's week-ahead snapshot. Pull:\n"
+            "- weather_red_deer_forecast (7 days, flag any outdoor risk)\n"
+            "- Open estimates with age — anything >14 days?\n"
+            "- Active jobs with budget/schedule risk\n"
+            "- Calendar events for the week (if available)\n\n"
+            "Output:\n"
+            "WEEK OF [date]\n"
+            "Pipeline: $X across N estimates ([X over 14 days])\n"
+            "Active jobs: N — flag any at risk\n"
+            "Weather watch: [days with outdoor risk]\n"
+            "Schedule highlights: [key meetings/events]\n"
+            "Single thing that would make this week a win: [your call]\n\n"
+            "Under 250 words. Push back if Jacob's avoiding something."
+        )
+
+    # /idea — quick idea capture
+    elif text_lower.startswith("/idea"):
+        content = user_text[len("/idea"):].strip()
+        if not content:
+            await send_telegram(chat_id, "Format: /idea [your idea]\nEx: /idea Partner with high-end realtors for staging consults")
+            return JSONResponse({"ok": True})
+        user_text = (
+            f"Jacob is capturing a business idea. Store in Zep memory tagged 'idea'. "
+            f"Idea: \"{content}\". After saving, give ONE honest reaction (1-2 sentences) — "
+            f"is this strong, weak, derivative, or worth testing? Don't be sycophantic."
+        )
+
+    # /blocker — what's in the way
+    elif text_lower.startswith("/blocker"):
+        content = user_text[len("/blocker"):].strip()
+        if not content:
+            await send_telegram(chat_id, "Format: /blocker [what's blocking you]\nEx: /blocker Waiting on Anderson tile selection, holding up framing")
+            return JSONResponse({"ok": True})
+        user_text = (
+            f"Jacob is logging a blocker. Store in Zep tagged 'blocker'. "
+            f"Blocker: \"{content}\". After saving, ask one sharp question: "
+            f"what's the smallest action that unblocks this in the next 24h?"
+        )
+
+    # /risk — risk capture
+    elif text_lower.startswith("/risk"):
+        content = user_text[len("/risk"):].strip()
+        if not content:
+            await send_telegram(chat_id, "Format: /risk [the risk]\nEx: /risk Anderson job margin trending below 25%, sub overruns")
+            return JSONResponse({"ok": True})
+        user_text = (
+            f"Jacob is flagging a risk. Store in Zep tagged 'risk'. "
+            f"Risk: \"{content}\". Confirm saved in one line and suggest the smallest mitigation."
+        )
+
+    # /opportunity — opportunity capture
+    elif text_lower.startswith("/opportunity") or text_lower.startswith("/opp"):
+        prefix_len = len("/opportunity") if text_lower.startswith("/opportunity") else len("/opp")
+        content = user_text[prefix_len:].strip()
+        if not content:
+            await send_telegram(chat_id, "Format: /opportunity [the opportunity]\nEx: /opp Hendersons want to do a second build on adjacent lot")
+            return JSONResponse({"ok": True})
+        user_text = (
+            f"Jacob is capturing an opportunity. Store in Zep tagged 'opportunity'. "
+            f"Opportunity: \"{content}\". Confirm saved and ask one sharp question: "
+            f"what's the next move to validate or capture this?"
+        )
 
     # /diagnostic — full integration health report (both services)
     elif text_lower in ("/diagnostic", "/diag", "/health"):
@@ -1020,6 +1152,38 @@ async def new_lead(request: Request, background_tasks: BackgroundTasks):
     # ── Score the lead before alerting Jacob ──────────────────────────────
     scoring = score_lead(name, email, phone, project, message)
 
+    # ── Auto-create JobTread contact for HOT/WARM (score >= 6) ───────────
+    jobtread_contact_status = ""
+    if scoring["score"] >= 6 and name:
+        mcp_url = os.getenv("MCP_SERVER_URL", "")
+        mcp_secret = os.getenv("MCP_SERVER_SECRET", "")
+        if mcp_url and mcp_secret:
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    # Use jobtread_create_job with minimal scope to also create the customer account
+                    # (existing tool auto-creates account + location when needed)
+                    job_resp = await client.post(
+                        f"{mcp_url.rstrip('/')}/mcp/execute",
+                        headers={"x-mcp-secret": mcp_secret, "content-type": "application/json"},
+                        json={
+                            "tool": "jobtread_create_job",
+                            "params": {
+                                "name": f"Inbound lead — {name}",
+                                "customer_name": name,
+                                "customer_email": email,
+                                "customer_phone": phone,
+                                "description": f"Website inquiry: {project}\n\n{message[:500]}"
+                            }
+                        }
+                    )
+                    result = job_resp.json()
+                    if result.get("success"):
+                        jobtread_contact_status = f"\n✅ Auto-created in JobTread: #{result.get('job_number', '?')}"
+                    else:
+                        jobtread_contact_status = f"\n⚠️ JobTread create failed: {str(result.get('error', ''))[:80]}"
+            except Exception as e:
+                jobtread_contact_status = f"\n⚠️ JobTread sync error: {str(e)[:80]}"
+
     # Notify Jacob immediately with score
     tier_emoji = {
         "HOT": "🔥",
@@ -1037,6 +1201,7 @@ async def new_lead(request: Request, background_tasks: BackgroundTasks):
         + (f"Message: {message[:200]}\n" if message else "")
         + f"\n<b>Action:</b> {scoring['recommended_action']}\n"
         + f"<b>Why this score:</b> " + "; ".join(scoring['reasons'][:4])
+        + jobtread_contact_status
         + "\n\nDrafting response..."
     )
     await send_telegram(JACOB_CHAT_ID, alert)
