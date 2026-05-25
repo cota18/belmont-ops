@@ -31,9 +31,13 @@ MCP_SECRET = os.getenv("MCP_SERVER_SECRET", "")
 # MCP PROTOCOL ENDPOINTS
 # ─────────────────────────────────────────────
 
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+JACOB_CHAT_ID = os.getenv("JACOB_CHAT_ID", "")
+
+
 @app.get("/")
 async def health():
-    return {"status": "Belmont MCP Server online", "tools": 25}
+    return {"status": "Belmont MCP Server online", "tools": 27}
 
 
 @app.get("/mcp/tools")
@@ -332,6 +336,27 @@ async def list_tools():
                 "name": "meta_get_ad_account_info",
                 "description": "Get the Belmont Meta ad account details: balance, spend limits, currency, account status.",
                 "input_schema": {"type": "object", "properties": {}}
+            },
+            # ── GOOGLE ───────────────────────────────────────────────────────
+            {
+                "name": "google_calendar_today",
+                "description": "Get Jacob's Google Calendar events for today. Returns meetings, appointments, family events, and time blocks.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "date": {"type": "string", "description": "Date in YYYY-MM-DD format. Defaults to today."}
+                    }
+                }
+            },
+            {
+                "name": "gmail_urgent",
+                "description": "Check Gmail for unread messages in the last 24 hours that look important or time-sensitive. Returns subject, sender, and snippet.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "max_results": {"type": "integer", "description": "Max emails to return. Default 5."}
+                    }
+                }
             }
         ]
     }
@@ -354,6 +379,8 @@ async def execute_tool(request: Request, x_mcp_secret: str = Header(None)):
             result = await execute_qbo(tool_name, params)
         elif tool_name.startswith("meta_"):
             result = await execute_meta(tool_name, params)
+        elif tool_name in ("google_calendar_today", "gmail_urgent"):
+            result = await execute_google(tool_name, params)
         else:
             result = {"error": f"Unknown tool: {tool_name}"}
     except Exception as e:
@@ -975,3 +1002,96 @@ async def execute_meta(tool: str, params: dict) -> dict:
         )
 
     return {"error": f"Unhandled Meta tool: {tool}"}
+
+
+# ─────────────────────────────────────────────
+# GOOGLE TOOLS
+# ─────────────────────────────────────────────
+
+async def execute_google(tool: str, params: dict) -> dict:
+    token = os.getenv("GOOGLE_CALENDAR_TOKEN") if tool == "google_calendar_today" else os.getenv("GMAIL_TOKEN")
+    refresh_token = os.getenv("GOOGLE_CALENDAR_REFRESH_TOKEN") if tool == "google_calendar_today" else os.getenv("GMAIL_REFRESH_TOKEN")
+    client_id = os.getenv("GOOGLE_CLIENT_ID")
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+
+    if not all([token, refresh_token, client_id, client_secret]) or token in ("PENDING", None):
+        service = "Google Calendar" if tool == "google_calendar_today" else "Gmail"
+        return {"error": f"{service} not yet configured. Complete OAuth setup first."}
+
+    try:
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+        creds = Credentials(
+            token=token, refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id, client_secret=client_secret
+        )
+
+        if tool == "google_calendar_today":
+            from datetime import datetime as dt
+            date = params.get("date") or dt.now().strftime("%Y-%m-%d")
+            service_obj = build("calendar", "v3", credentials=creds)
+            events_result = service_obj.events().list(
+                calendarId="primary",
+                timeMin=f"{date}T00:00:00Z",
+                timeMax=f"{date}T23:59:59Z",
+                singleEvents=True, orderBy="startTime"
+            ).execute()
+            events = events_result.get("items", [])
+            simplified = []
+            for e in events:
+                start = e["start"].get("dateTime", e["start"].get("date"))
+                simplified.append({
+                    "title": e.get("summary", "No title"),
+                    "start": start,
+                    "location": e.get("location", ""),
+                    "description": (e.get("description", "") or "")[:100]
+                })
+            return {"events": simplified, "count": len(simplified), "date": date}
+
+        elif tool == "gmail_urgent":
+            max_results = params.get("max_results", 5)
+            service_obj = build("gmail", "v1", credentials=creds)
+            results = service_obj.users().messages().list(
+                userId="me", q="is:unread newer_than:1d", maxResults=max_results
+            ).execute()
+            messages = results.get("messages", [])
+            emails = []
+            for m in messages:
+                msg = service_obj.users().messages().get(
+                    userId="me", id=m["id"], format="metadata",
+                    metadataHeaders=["From", "Subject", "Date"]
+                ).execute()
+                headers = {h["name"]: h["value"] for h in msg["payload"]["headers"]}
+                emails.append({
+                    "from": headers.get("From", "Unknown"),
+                    "subject": headers.get("Subject", "No subject"),
+                    "snippet": msg.get("snippet", "")[:120]
+                })
+            return {"emails": emails, "unread_count": len(messages)}
+
+    except Exception as ex:
+        return {"error": str(ex)}
+
+    return {"error": f"Unhandled Google tool: {tool}"}
+
+
+# ─────────────────────────────────────────────
+# BRIEFING ENDPOINT
+# ─────────────────────────────────────────────
+
+@app.post("/briefing")
+async def trigger_briefing(request: Request):
+    """Trigger a full morning briefing push to Jacob's Telegram."""
+    secret = request.headers.get("x-mcp-secret")
+    if MCP_SECRET and secret != MCP_SECRET:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+    try:
+        from briefing import generate_briefing, send_telegram as briefing_send
+        import httpx as _httpx
+        msg = await generate_briefing()
+        async with _httpx.AsyncClient() as client:
+            await briefing_send(client, msg)
+        return {"status": "sent", "preview": msg[:300]}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}

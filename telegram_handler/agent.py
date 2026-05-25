@@ -3,6 +3,7 @@ BELMONT OPS - CLAUDE AGENT WITH TOOL-USE LOOP
 Uses Anthropic Messages API directly with tool_use blocks.
 Fetches tool manifest from MCP server, executes tools via POST /mcp/execute,
 loops until Claude returns a final text response.
+Supports vision content for photo/receipt processing.
 """
 
 import os
@@ -70,17 +71,14 @@ async def get_mcp_tools() -> list:
 # ── MCP Tool Executor ─────────────────────────────────────────────────────────
 
 async def call_mcp_tool(tool_name: str, params: dict) -> dict:
-    """Execute a tool via the MCP server. Returns result dict."""
+    """Execute a tool via the MCP server."""
     if not MCP_SERVER_URL:
         return {"error": "MCP_SERVER_URL not configured"}
     try:
         async with httpx.AsyncClient(timeout=45) as client:
             resp = await client.post(
                 f"{MCP_SERVER_URL}/mcp/execute",
-                headers={
-                    "x-mcp-secret": MCP_SECRET,
-                    "content-type": "application/json"
-                },
+                headers={"x-mcp-secret": MCP_SECRET, "content-type": "application/json"},
                 json={"tool": tool_name, "params": params}
             )
             if resp.status_code == 200:
@@ -96,37 +94,81 @@ async def call_mcp_tool(tool_name: str, params: dict) -> dict:
         return {"error": str(e)}
 
 
+# ── BJJ Tracker ───────────────────────────────────────────────────────────────
+
+async def log_bjj_session(zep_client, user_id: str) -> str:
+    """Log a BJJ session and return weekly count."""
+    from datetime import datetime, timedelta
+    today = datetime.now().strftime("%Y-%m-%d")
+    week_start = (datetime.now() - timedelta(days=datetime.now().weekday())).strftime("%Y-%m-%d")
+
+    try:
+        from zep_cloud.types import Message
+        await zep_client.memory.add(
+            session_id=f"{user_id}_bjj",
+            messages=[
+                Message(
+                    role_type="user",
+                    content=f"BJJ session logged: {today}",
+                    role="Jacob"
+                )
+            ]
+        )
+        # Search this week's sessions
+        results = await zep_client.memory.search_sessions(
+            user_id=user_id,
+            text=f"BJJ session logged {week_start[:7]}",
+            limit=10
+        )
+        if results and results.results:
+            this_week = [
+                r for r in results.results
+                if r.message and week_start in (r.message.content or "")
+            ]
+            count = max(1, len(this_week))
+        else:
+            count = 1
+        remaining = max(0, 4 - count)
+        status = "Target hit!" if count >= 4 else f"{remaining} more to hit your weekly target"
+        return f"BJJ session logged. This week: {count}/4. {status}"
+    except Exception as e:
+        return f"BJJ session logged for {today}."
+
+
 # ── Main Agentic Loop ─────────────────────────────────────────────────────────
 
 async def run_agent(
     agent_type: str,
     message: str,
     memory_context: str = "",
-    chat_id: str = "default"
+    chat_id: str = "default",
+    vision_content: list = None
 ) -> str:
     """
     Run Claude with tool-use loop against the MCP server.
-    1. Fetch tool manifest from MCP server
-    2. Send user message to Claude with tools
-    3. If Claude calls tools: execute via MCP, feed results back
-    4. Loop until Claude returns final text
+    Supports optional vision_content for image/photo messages.
     """
     if not ANTHROPIC_KEY:
         return "Error: ANTHROPIC_API_KEY is not set."
 
-    # Build system prompt
     base_prompt = AGENT_PROMPTS.get(agent_type, AGENT_PROMPTS.get("orchestrator", "You are a helpful assistant."))
     system_prompt = base_prompt
     if memory_context:
         system_prompt = f"{base_prompt}\n\n--- MEMORY CONTEXT ---\n{memory_context}\n--- END MEMORY ---"
 
-    # Fetch tools
     tools = await get_mcp_tools()
     if not tools:
         print(f"[agent] No tools available — Claude will answer from knowledge only")
 
     model = MODEL_HEAVY if agent_type in HEAVY_AGENTS else MODEL_FAST
-    messages = [{"role": "user", "content": message}]
+
+    # Build initial user message — support vision content
+    if vision_content:
+        user_message_content = vision_content
+    else:
+        user_message_content = message
+
+    messages = [{"role": "user", "content": user_message_content}]
 
     headers = {
         "x-api-key": ANTHROPIC_KEY,
@@ -135,7 +177,7 @@ async def run_agent(
     }
 
     async with httpx.AsyncClient(timeout=120) as client:
-        for iteration in range(10):  # max 10 agentic iterations
+        for iteration in range(10):
             payload = {
                 "model": model,
                 "max_tokens": 8192,
@@ -168,14 +210,12 @@ async def run_agent(
 
             print(f"[agent] Claude stop_reason={stop_reason}, content blocks={len(content)}")
 
-            # Done — extract text
             if stop_reason == "end_turn":
                 for block in content:
                     if block.get("type") == "text":
                         return block["text"].strip()
                 return "[Task complete — no text output]"
 
-            # Tool use — execute and feed results back
             if stop_reason == "tool_use":
                 tool_results = []
                 for block in content:
@@ -189,13 +229,10 @@ async def run_agent(
                             "tool_use_id": block["id"],
                             "content": json.dumps(result)
                         })
-
-                # Append assistant turn + tool results
                 messages.append({"role": "assistant", "content": content})
                 messages.append({"role": "user", "content": tool_results})
                 continue
 
-            # Any other stop reason — bail
             print(f"[agent] Unexpected stop_reason: {stop_reason}")
             break
 
