@@ -521,13 +521,13 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             "/exit — Exit tracker (TopTick)\n"
             "/weather — 3-day Red Deer forecast\n"
             "\n<b>Estimating + Pricing</b>\n"
-            "/quote [description] — Fast ballpark estimate\n"
             "/pricing [key] — Quick rate reference\n"
             "/gst [amount] — 5% GST math\n"
             "\n<b>Templates + SOPs</b>\n"
             "/template — Email/document templates\n"
             "/sop — Operating procedures\n"
             "\n<b>Capture (explicit memory)</b>\n"
+            "/note [anything] — Catch-all, agent categorizes\n"
             "/promise [task by when] — Commitment\n"
             "/decision [what + why] — Major decision\n"
             "/lesson [rule] — Hard-earned rule\n"
@@ -536,6 +536,9 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             "/risk [text] — Risk flag\n"
             "/opp [text] — Opportunity\n"
             "/expense [vendor amount cat] — Log expense\n"
+            "\n<b>Thinking</b>\n"
+            "/think [decision] — Walk through a hard call\n"
+            "/quote [project] — Fast ballpark estimate\n"
             "\n<b>Recall</b>\n"
             "/promises /decisions /lessons /wins /network\n"
             "/who [name] — Contact card\n"
@@ -822,6 +825,46 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             f"Jacob is capturing an opportunity. Store in Zep tagged 'opportunity'. "
             f"Opportunity: \"{content}\". Confirm saved and ask one sharp question: "
             f"what's the next move to validate or capture this?"
+        )
+
+    # /note — catch-all note (agent picks category)
+    elif text_lower.startswith("/note"):
+        content = user_text[len("/note"):].strip()
+        if not content:
+            await send_telegram(chat_id, "Format: /note [anything]\nEx: /note Met a great drywall sub at the supply store, his name is Mike, 403-555-0199")
+            return JSONResponse({"ok": True})
+        user_text = (
+            f"Jacob is logging a general note. Read it carefully and categorize it yourself:\n\n"
+            f"\"{content}\"\n\n"
+            f"Possible categories: idea, blocker, risk, opportunity, decision, lesson, "
+            f"commitment, person/contact, vendor/supplier, material price, family, "
+            f"client info, market intel, other. Pick the best fit and store it with that tag in Zep. "
+            f"Confirm in one short line what you captured and how to recall it. "
+            f"If it's a person, vendor, or material price — auto-store the structured fields too."
+        )
+
+    # /think — decision walkthrough (genuinely hard call)
+    elif text_lower.startswith("/think"):
+        topic = user_text[len("/think"):].strip()
+        if not topic:
+            await send_telegram(
+                chat_id,
+                "Format: /think [the decision you're wrestling with]\n"
+                "Ex: /think Should I take the Mitchell job, scope is vague but budget is $180K"
+            )
+            return JSONResponse({"ok": True})
+        user_text = (
+            f"Jacob has a decision to think through. Topic: \"{topic}\"\n\n"
+            f"Walk him through a fast decision framework:\n"
+            f"1. What's actually being decided? (state it precisely in one sentence)\n"
+            f"2. What's the upside if it works? (concrete, numbers if possible)\n"
+            f"3. What's the downside if it doesn't? (concrete, numbers if possible)\n"
+            f"4. What's the reversibility? (one-way door or two-way door)\n"
+            f"5. What info would change the answer? (and how to get it cheaply)\n"
+            f"6. Your honest recommendation, in one sentence. No 'on the other hand'.\n\n"
+            f"Use Belmont context. Pull tools if data helps (estimates, jobs, money). "
+            f"Be direct. Push back if Jacob's avoiding the obvious answer. "
+            f"End by storing the decision-in-progress to Zep so we can revisit later."
         )
 
     # /diagnostic — full integration health report (both services)
