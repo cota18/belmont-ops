@@ -19,8 +19,8 @@ ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY")
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "").rstrip("/")
 MCP_SECRET = os.getenv("MCP_SERVER_SECRET", "")
 
-MODEL_HEAVY = "claude-opus-4-6"
-MODEL_FAST = "claude-sonnet-4-6"
+MODEL_HEAVY = "claude-opus-4-5"
+MODEL_FAST = "claude-sonnet-4-5"
 
 HEAVY_AGENTS = {"orchestrator", "estimating", "finance"}
 
