@@ -47,9 +47,14 @@ QUICK_COMMANDS = {
     "/ads": "Get Meta ad performance for the last 7 days: total spend, impressions, clicks, top campaign. Be direct with the numbers.",
     "/brief": "Generate a full morning briefing now: schedule, open estimates with pipeline total, active jobs, money owed, urgent emails.",
     "/status": "Check system health. Confirm MCP server is responding by calling one lightweight tool. Report Railway service status.",
+    "/recap": "Give me a full business snapshot: active jobs count, open pipeline value, total receivables, any overdue invoices, and the top 3 things I should focus on this week.",
+    "/subs": "List all subcontractors stored in memory for Belmont. Show name, trade, rate, and last job worked together. If none are stored yet, say so and explain how to add them.",
+    "/pipeline": "Pull all open estimates from JobTread. Calculate total pipeline value, average estimate size, and which ones are oldest. Rank by age and flag any over 14 days.",
+    "/exit": "Check my exit tracker. Based on current QBO revenue data, how am I tracking toward the $8K/month net income target for 6 consecutive months? What's the gap and what's the fastest path to closing it?",
 }
 
 BJJ_LOG_KEYWORDS = ["/bjj", "trained bjj", "bjj session", "rolled today", "mat time"]
+SUB_ADD_KEYWORDS = ["add sub", "new sub", "add subcontractor", "new subcontractor"]
 
 ASYNC_KEYWORDS = [
     "follow up", "followup", "follow-up", "all invoices", "all jobs",
@@ -229,6 +234,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             is_receipt = any(w in caption.lower() for w in
                              ["receipt", "expense", "invoice", "bill", "cost"])
 
+            no_caption = not message.get("caption")
             if is_receipt:
                 vision_prompt = (
                     f"Jacob sent a photo with caption: '{caption}'\n"
@@ -238,6 +244,13 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
                     "- Date\n"
                     "- Category (materials, fuel, tools, food, subcontractor, other)\n"
                     "Confirm the details and offer to log it to QuickBooks as an expense."
+                )
+            elif no_caption:
+                vision_prompt = (
+                    "Jacob sent a job site photo with no caption. "
+                    "Describe what you see in the context of a construction site. "
+                    "Then ask: 'Which job should I log this to?' "
+                    "Once he replies with a job name, log it as a progress note in JobTread."
                 )
             else:
                 vision_prompt = (
@@ -287,15 +300,23 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     if text_lower == "/help":
         help_text = (
             "<b>Belmont Ops Commands:</b>\n\n"
+            "<b>Business</b>\n"
             "/brief — Full morning briefing\n"
             "/jobs — Active job list\n"
             "/estimates — Open estimates + pipeline\n"
+            "/pipeline — Pipeline by age with flags\n"
             "/money — Cash and receivables\n"
             "/ads — Meta ad performance\n"
-            "/bjj — Log BJJ session or check weekly count\n"
+            "/recap — Full business snapshot\n"
+            "/exit — Exit tracker (TopTick)\n"
+            "\n<b>People</b>\n"
+            "/subs — Subcontractor list\n"
+            "/bjj — Log BJJ session\n"
+            "\n<b>System</b>\n"
             "/status — System health\n"
             "/help — This menu\n\n"
-            "Or ask me anything in plain English."
+            "Or ask me anything in plain English.\n"
+            "Send a photo with 'receipt' in the caption to log an expense."
         )
         await send_telegram(chat_id, help_text)
         return JSONResponse({"ok": True})
@@ -307,6 +328,13 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         user_text = (
             f"{user_text}\n\nContext: Jacob tracks BJJ training. Target is 4 sessions/week. "
             "Log this session in memory and report his count for this week."
+        )
+
+    elif any(k in text_lower for k in SUB_ADD_KEYWORDS):
+        user_text = (
+            f"{user_text}\n\nContext: Store this subcontractor in Zep memory under Belmont subs. "
+            "Fields to capture: name, trade, phone, rate (hourly or per project), notes. "
+            "Confirm what was saved and how to recall it later with /subs."
         )
 
     # ── Route and Run ─────────────────────────────────────────────────────────
@@ -339,3 +367,75 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     await save_exchange(session_id, user_text, result)
     await send_telegram(chat_id, result)
     return JSONResponse({"ok": True})
+
+
+# ─────────────────────────────────────────────
+# LEAD INTAKE WEBHOOK
+# ─────────────────────────────────────────────
+
+@app.post("/newlead")
+async def new_lead(request: Request, background_tasks: BackgroundTasks):
+    """
+    Accepts new leads from Squarespace form webhooks or any HTTP POST.
+    Point your Squarespace form webhook here.
+    Squarespace: Settings > Advanced > External API > Form Webhook URL
+    Or use Zapier/Make to forward form submissions here.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        try:
+            form = await request.form()
+            data = dict(form)
+        except Exception:
+            data = {}
+
+    # Normalize common Squarespace/form field names
+    def pick(*keys):
+        for k in keys:
+            v = data.get(k) or data.get(k.lower()) or data.get(k.upper())
+            if v:
+                return str(v).strip()
+        return ""
+
+    name = pick("name", "Name", "fullName", "full_name") or (
+        pick("firstName", "first_name") + " " + pick("lastName", "last_name")
+    ).strip()
+    email = pick("email", "Email", "emailAddress")
+    phone = pick("phone", "Phone", "phoneNumber", "phone_number")
+    project = pick("project", "Project", "projectType", "subject", "Subject", "service")
+    message = pick("message", "Message", "comments", "Comments", "description", "notes")
+
+    if not name and not email and not phone:
+        return JSONResponse({"ok": True, "note": "No lead data found"})
+
+    # Notify Jacob immediately
+    alert = (
+        f"<b>New Lead from Website</b>\n\n"
+        f"<b>{name or 'Unknown'}</b>\n"
+        + (f"Project: {project}\n" if project else "")
+        + (f"Email: {email}\n" if email else "")
+        + (f"Phone: {phone}\n" if phone else "")
+        + (f"Message: {message[:200]}\n" if message else "")
+        + "\nDrafting response..."
+    )
+    await send_telegram(JACOB_CHAT_ID, alert)
+
+    # Trigger agent to draft outreach
+    prompt = (
+        f"New lead from Belmont website:\n"
+        f"Name: {name}\nEmail: {email}\nPhone: {phone}\n"
+        f"Project interest: {project}\nMessage: {message}\n\n"
+        "Draft a personalized first response in Jacob's voice that:\n"
+        "1. Acknowledges their specific project\n"
+        "2. Establishes Belmont's premium positioning (not the cheapest, the best)\n"
+        "3. Proposes a specific next step — site visit or 15-min call\n"
+        "4. Under 120 words. No fluff.\n\n"
+        "Present it ready to copy-paste. Then ask Jacob to confirm or adjust before sending."
+    )
+
+    background_tasks.add_task(
+        process_message_async, JACOB_CHAT_ID, prompt, "comms"
+    )
+
+    return JSONResponse({"ok": True, "lead": name})
