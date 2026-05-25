@@ -536,8 +536,10 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             "/risk [text] — Risk flag\n"
             "/opp [text] — Opportunity\n"
             "/expense [vendor amount cat] — Log expense\n"
-            "\n<b>Thinking</b>\n"
+            "\n<b>Thinking + Research</b>\n"
             "/think [decision] — Walk through a hard call\n"
+            "/research [topic] — Deep web research with sources\n"
+            "/lookup [topic] — Quick fact lookup\n"
             "/quote [project] — Fast ballpark estimate\n"
             "\n<b>Recall</b>\n"
             "/promises /decisions /lessons /wins /network\n"
@@ -841,6 +843,33 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             f"client info, market intel, other. Pick the best fit and store it with that tag in Zep. "
             f"Confirm in one short line what you captured and how to recall it. "
             f"If it's a person, vendor, or material price — auto-store the structured fields too."
+        )
+
+    # /research — deep web research on any topic
+    elif text_lower.startswith("/research") or text_lower.startswith("/lookup"):
+        prefix_len = len("/research") if text_lower.startswith("/research") else len("/lookup")
+        topic = user_text[prefix_len:].strip()
+        if not topic:
+            await send_telegram(
+                chat_id,
+                "Format: /research [topic]\n\n"
+                "Examples:\n"
+                "/research current cedar 2x6 prices in Red Deer\n"
+                "/research [client name] property at [address]\n"
+                "/research Belmont competitors in Central Alberta\n"
+                "/lookup new Alberta building code changes 2026"
+            )
+            return JSONResponse({"ok": True})
+        user_text = (
+            f"Research topic: \"{topic}\"\n\n"
+            f"Use web_search aggressively (multiple searches if needed). "
+            f"Pull current information, prices, names, addresses, facts. "
+            f"Synthesize the findings into a clean brief Jacob can act on:\n"
+            f"- Key findings (3-5 bullet points, specific facts not generalities)\n"
+            f"- Sources (cite where each fact came from)\n"
+            f"- Recommended next action for Belmont, if any\n\n"
+            f"Be direct. If the topic is a person or company, dig into their public footprint. "
+            f"If pricing, give actual current numbers with retailer names. No fluff."
         )
 
     # /think — decision walkthrough (genuinely hard call)

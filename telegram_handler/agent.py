@@ -159,6 +159,24 @@ async def run_agent(
     tools = await get_mcp_tools()
     if not tools:
         print(f"[agent] No tools available — Claude will answer from knowledge only")
+        tools = []
+
+    # Add Anthropic's built-in web search tool — Red Deer localized
+    # Server-side: Claude executes searches automatically, no MCP routing needed
+    web_search_tool = {
+        "type": "web_search_20250305",
+        "name": "web_search",
+        "max_uses": 5,
+        "user_location": {
+            "type": "approximate",
+            "city": "Red Deer",
+            "region": "Alberta",
+            "country": "CA",
+            "timezone": "America/Edmonton"
+        }
+    }
+    tools.append(web_search_tool)
+    print(f"[agent] Total tools: {len(tools)} (incl. built-in web_search)")
 
     model = MODEL_HEAVY if agent_type in HEAVY_AGENTS else MODEL_FAST
 
@@ -211,12 +229,23 @@ async def run_agent(
             print(f"[agent] Claude stop_reason={stop_reason}, content blocks={len(content)}")
 
             if stop_reason == "end_turn":
-                for block in content:
-                    if block.get("type") == "text":
-                        return block["text"].strip()
+                # Concatenate all text blocks (web_search responses may have multiple)
+                texts = [b["text"] for b in content if b.get("type") == "text"]
+                if texts:
+                    return "\n\n".join(t for t in texts).strip()
                 return "[Task complete — no text output]"
 
+            # pause_turn: Claude paused mid-thought (long server-side tool runs);
+            # continue the loop with same messages to resume
+            if stop_reason == "pause_turn":
+                messages.append({"role": "assistant", "content": content})
+                print(f"[agent] pause_turn — continuing loop")
+                continue
+
             if stop_reason == "tool_use":
+                # Only handle client-side tool_use blocks (MCP tools).
+                # Server-side tools (web_search) have type=server_tool_use and are
+                # auto-executed by the Anthropic API — no action from us needed.
                 tool_results = []
                 for block in content:
                     if block.get("type") == "tool_use":
@@ -229,11 +258,22 @@ async def run_agent(
                             "tool_use_id": block["id"],
                             "content": json.dumps(result)
                         })
-                messages.append({"role": "assistant", "content": content})
-                messages.append({"role": "user", "content": tool_results})
+
+                # If only server-side tools ran (no client tools), Claude may
+                # already have all info needed. Continue without adding tool_results.
+                if tool_results:
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({"role": "user", "content": tool_results})
+                else:
+                    messages.append({"role": "assistant", "content": content})
+                    print(f"[agent] No client-side tools to execute — Claude continuing")
                 continue
 
             print(f"[agent] Unexpected stop_reason: {stop_reason}")
+            # Try to recover any text in content before bailing
+            texts = [b["text"] for b in content if b.get("type") == "text"]
+            if texts:
+                return "\n\n".join(texts).strip()
             break
 
     return "[Agent loop ended without a final response]"
