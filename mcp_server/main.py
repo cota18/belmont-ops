@@ -36,8 +36,8 @@ async def validate_env_on_startup():
         "META_PAGE_ID": "Meta page tools",
         "GOOGLE_CLIENT_ID": "Google Calendar + Gmail",
         "GOOGLE_CLIENT_SECRET": "Google Calendar + Gmail",
-        "GOOGLE_CALENDAR_TOKEN": "Google Calendar",
-        "GMAIL_TOKEN": "Gmail",
+        "GOOGLE_REFRESH_TOKEN": "Google Calendar + Gmail (single token for both)",
+        "GOOGLE_ACCESS_TOKEN": "Google current access token (auto-refreshed)",
         "TELEGRAM_TOKEN": "Briefing push",
         "JACOB_CHAT_ID": "Briefing push",
     }
@@ -188,17 +188,24 @@ async def diagnostic():
     # ── GOOGLE ────────────────────────────────────────────────────────────
     g_cid = os.getenv("GOOGLE_CLIENT_ID", "")
     g_cs = os.getenv("GOOGLE_CLIENT_SECRET", "")
-    g_cal_t = os.getenv("GOOGLE_CALENDAR_TOKEN", "")
-    g_gmail_t = os.getenv("GMAIL_TOKEN", "")
+    g_refresh = os.getenv("GOOGLE_REFRESH_TOKEN", "")
 
     if not (g_cid and g_cs):
         mark("google", "red", "GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set",
              "Create OAuth credentials at console.cloud.google.com")
-    elif not (g_cal_t and g_gmail_t) or g_cal_t in ("PENDING", "") or g_gmail_t in ("PENDING", ""):
-        mark("google", "red", "Google OAuth tokens not set — needs flow",
-             "Run Google OAuth flow with calendar.readonly + gmail.readonly scopes")
+    elif not g_refresh or g_refresh in ("PENDING", ""):
+        mark("google", "yellow", "GOOGLE_REFRESH_TOKEN not set — run scripts/google_oauth.js locally",
+             "cd belmont-ops/scripts && node google_oauth.js")
     else:
-        mark("google", "green", "OAuth tokens present (full validation requires live API call)")
+        try:
+            test = await execute_google("google_calendar_today", {})
+            if "error" in test:
+                mark("google", "yellow", f"Token present but Calendar call failed: {test['error'][:80]}",
+                     "Re-run scripts/google_oauth.js to refresh tokens")
+            else:
+                mark("google", "green", f"Calendar connected — {test.get('count', 0)} events today")
+        except Exception as eg:
+            mark("google", "yellow", f"Token present, validation error: {str(eg)[:80]}", "")
 
     # ── TELEGRAM ──────────────────────────────────────────────────────────
     tg_token = os.getenv("TELEGRAM_TOKEN", "")
@@ -1254,52 +1261,87 @@ async def execute_meta(tool: str, params: dict) -> dict:
 # GOOGLE TOOLS
 # ─────────────────────────────────────────────
 
-async def execute_google(tool: str, params: dict) -> dict:
-    token = os.getenv("GOOGLE_CALENDAR_TOKEN") if tool == "google_calendar_today" else os.getenv("GMAIL_TOKEN")
-    refresh_token = os.getenv("GOOGLE_CALENDAR_REFRESH_TOKEN") if tool == "google_calendar_today" else os.getenv("GMAIL_REFRESH_TOKEN")
-    client_id = os.getenv("GOOGLE_CLIENT_ID")
-    client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+async def _get_google_creds():
+    """
+    Build Google OAuth2 Credentials from env vars.
+    Uses a single GOOGLE_REFRESH_TOKEN that covers both Calendar and Gmail scopes.
+    The google-auth library auto-refreshes the access_token when it expires.
+    """
+    from google.oauth2.credentials import Credentials
+    refresh_token = os.getenv("GOOGLE_REFRESH_TOKEN", "")
+    access_token = os.getenv("GOOGLE_ACCESS_TOKEN", "")
+    client_id = os.getenv("GOOGLE_CLIENT_ID", "")
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")
 
-    if not all([token, refresh_token, client_id, client_secret]) or token in ("PENDING", None):
-        service = "Google Calendar" if tool == "google_calendar_today" else "Gmail"
-        return {"error": f"{service} not yet configured. Complete OAuth setup first."}
+    if not refresh_token or refresh_token in ("PENDING", ""):
+        return None, "Google not authorized — run scripts/google_oauth.js to complete setup"
+    if not (client_id and client_secret):
+        return None, "GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set"
+
+    creds = Credentials(
+        token=access_token or None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=client_id,
+        client_secret=client_secret,
+        scopes=[
+            "https://www.googleapis.com/auth/calendar",
+            "https://www.googleapis.com/auth/calendar.events",
+            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.compose",
+        ]
+    )
+    return creds, None
+
+
+async def execute_google(tool: str, params: dict) -> dict:
+    creds, err = await _get_google_creds()
+    if err:
+        return {"error": err}
 
     try:
-        from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
-        creds = Credentials(
-            token=token, refresh_token=refresh_token,
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=client_id, client_secret=client_secret
-        )
 
         if tool == "google_calendar_today":
             from datetime import datetime as dt
-            date = params.get("date") or dt.now().strftime("%Y-%m-%d")
+            import pytz
+            edmonton = pytz.timezone("America/Edmonton")
+            date_str = params.get("date") or dt.now(edmonton).strftime("%Y-%m-%d")
+            # Build RFC3339 bounds in Edmonton time
+            day_start = edmonton.localize(dt.strptime(date_str, "%Y-%m-%d")).isoformat()
+            day_end = edmonton.localize(dt.strptime(date_str + " 23:59:59", "%Y-%m-%d %H:%M:%S")).isoformat()
+
             service_obj = build("calendar", "v3", credentials=creds)
             events_result = service_obj.events().list(
                 calendarId="primary",
-                timeMin=f"{date}T00:00:00Z",
-                timeMax=f"{date}T23:59:59Z",
-                singleEvents=True, orderBy="startTime"
+                timeMin=day_start,
+                timeMax=day_end,
+                singleEvents=True,
+                orderBy="startTime"
             ).execute()
             events = events_result.get("items", [])
             simplified = []
             for e in events:
-                start = e["start"].get("dateTime", e["start"].get("date"))
+                start = e["start"].get("dateTime", e["start"].get("date", ""))
+                end = e["end"].get("dateTime", e["end"].get("date", ""))
                 simplified.append({
                     "title": e.get("summary", "No title"),
                     "start": start,
+                    "end": end,
                     "location": e.get("location", ""),
-                    "description": (e.get("description", "") or "")[:100]
+                    "description": (e.get("description", "") or "")[:150],
+                    "attendees": len(e.get("attendees", [])),
                 })
-            return {"events": simplified, "count": len(simplified), "date": date}
+            return {"events": simplified, "count": len(simplified), "date": date_str}
 
         elif tool == "gmail_urgent":
-            max_results = params.get("max_results", 5)
+            max_results = int(params.get("max_results", 5))
             service_obj = build("gmail", "v1", credentials=creds)
             results = service_obj.users().messages().list(
-                userId="me", q="is:unread newer_than:1d", maxResults=max_results
+                userId="me",
+                q="is:unread newer_than:2d -category:promotions -category:social",
+                maxResults=max_results
             ).execute()
             messages = results.get("messages", [])
             emails = []
@@ -1312,9 +1354,10 @@ async def execute_google(tool: str, params: dict) -> dict:
                 emails.append({
                     "from": headers.get("From", "Unknown"),
                     "subject": headers.get("Subject", "No subject"),
-                    "snippet": msg.get("snippet", "")[:120]
+                    "date": headers.get("Date", ""),
+                    "snippet": msg.get("snippet", "")[:150]
                 })
-            return {"emails": emails, "unread_count": len(messages)}
+            return {"emails": emails, "unread_count": len(emails)}
 
     except Exception as ex:
         return {"error": str(ex)}
