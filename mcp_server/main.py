@@ -23,6 +23,7 @@ QBO_CLIENT_ID = os.getenv("QBO_CLIENT_ID")
 QBO_CLIENT_SECRET = os.getenv("QBO_CLIENT_SECRET")
 QBO_REFRESH_TOKEN = os.getenv("QBO_REFRESH_TOKEN")
 META_TOKEN = os.getenv("META_ACCESS_TOKEN")
+META_PAGE_TOKEN = os.getenv("META_PAGE_TOKEN", "")  # Page Access Token — separate from ads user token
 META_PAGE_ID = os.getenv("META_PAGE_ID")
 META_AD_ACCOUNT = os.getenv("META_AD_ACCOUNT_ID")
 MCP_SECRET = os.getenv("MCP_SERVER_SECRET", "")
@@ -929,9 +930,10 @@ async def execute_qbo(tool: str, params: dict) -> dict:
 # META TOOLS
 # ─────────────────────────────────────────────
 
-async def meta_request(endpoint: str, params: dict = None, method: str = "GET", data: dict = None) -> dict:
+async def meta_request(endpoint: str, params: dict = None, method: str = "GET", data: dict = None, use_page_token: bool = False) -> dict:
     base = "https://graph.facebook.com/v19.0"
-    p = {"access_token": META_TOKEN}
+    token = (META_PAGE_TOKEN or META_TOKEN) if use_page_token else META_TOKEN
+    p = {"access_token": token}
     if params:
         p.update(params)
     async with httpx.AsyncClient() as client:
@@ -944,23 +946,61 @@ async def meta_request(endpoint: str, params: dict = None, method: str = "GET", 
 
 
 async def execute_meta(tool: str, params: dict) -> dict:
+    # Page tools require a Page Access Token (new Pages experience).
+    # If META_PAGE_TOKEN is not set, return actionable instructions.
+    PAGE_TOKEN_MISSING_MSG = (
+        "Meta page tools require a Page Access Token. "
+        "Go to developers.facebook.com/tools/explorer, select your app, click 'Generate Access Token', "
+        "add permissions: pages_read_engagement, pages_manage_posts, pages_read_user_content, pages_show_list. "
+        "Then set META_PAGE_TOKEN in Railway environment variables and redeploy."
+    )
+
     if tool == "meta_get_page_posts":
+        if not META_PAGE_TOKEN:
+            return {"error": PAGE_TOKEN_MISSING_MSG}
         limit = params.get("limit", 10)
-        return await meta_request(f"{META_PAGE_ID}/posts",
-                                  {"fields": "id,message,created_time,likes.summary(true),comments.summary(true),shares", "limit": limit})
+        return await meta_request(
+            f"{META_PAGE_ID}/posts",
+            {"fields": "id,message,created_time,likes.summary(true),comments.summary(true),shares", "limit": limit},
+            use_page_token=True
+        )
 
     elif tool == "meta_get_insights":
+        if not META_PAGE_TOKEN:
+            return {"error": PAGE_TOKEN_MISSING_MSG}
         period = params.get("period", "week")
-        metrics = params.get("metrics", ["reach", "impressions", "page_engaged_users"])
-        return await meta_request(f"{META_PAGE_ID}/insights",
-                                  {"metric": ",".join(metrics), "period": period})
+        # Valid metrics for new Pages experience (v19.0+)
+        default_metrics = [
+            "page_impressions",
+            "page_impressions_unique",
+            "page_post_engagements",
+            "page_fans",
+            "page_views_total"
+        ]
+        raw_metrics = params.get("metrics", default_metrics)
+        # Map legacy names to correct API names
+        metric_map = {
+            "reach": "page_impressions_unique",
+            "impressions": "page_impressions",
+            "engagement": "page_post_engagements",
+            "followers": "page_fans",
+            "views": "page_views_total"
+        }
+        metrics = [metric_map.get(m, m) for m in raw_metrics]
+        return await meta_request(
+            f"{META_PAGE_ID}/insights",
+            {"metric": ",".join(metrics), "period": period},
+            use_page_token=True
+        )
 
     elif tool == "meta_create_post":
+        if not META_PAGE_TOKEN:
+            return {"error": PAGE_TOKEN_MISSING_MSG}
         data = {"message": params["message"]}
         if params.get("scheduled_time"):
             data["scheduled_publish_time"] = params["scheduled_time"]
             data["published"] = "false"
-        return await meta_request(f"{META_PAGE_ID}/feed", method="POST", data=data)
+        return await meta_request(f"{META_PAGE_ID}/feed", method="POST", data=data, use_page_token=True)
 
     elif tool == "meta_get_campaigns":
         status_filter = params.get("status", "ALL")
