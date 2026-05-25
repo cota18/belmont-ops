@@ -493,7 +493,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             f"If you can't find anything, ask Jacob what context to use."
         )
 
-    # /snooze [hours] — set DND window
+    # /snooze [hours] — set DND window (capped at 24h to prevent accidents)
     elif text_lower.startswith("/snooze"):
         import re
         m = re.search(r'(\d+)\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes)?', user_text[len("/snooze"):])
@@ -503,6 +503,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             n = int(m.group(1))
             unit = (m.group(2) or "h").lower()
             hours = n / 60.0 if unit.startswith("m") and not unit.startswith("h") else n
+        hours = min(max(hours, 0.25), 24)  # clamp 15min - 24h
         until = set_snooze(str(chat_id), hours)
         await send_telegram(
             chat_id,
