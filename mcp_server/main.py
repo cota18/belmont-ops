@@ -1,7 +1,8 @@
 """
 BELMONT OPS - MCP TOOL SERVER
-Exposes JobTread, QBO, and Meta as MCP-compatible tools
-that Claude Managed Agents connects to.
+Exposes JobTread, QBO, and Meta as MCP-compatible tools.
+25 tools: 9 JobTread, 8 QBO, 8 Meta (page + ads manager).
+Auth: x-mcp-secret header. JobTread: grantKey in query body.
 """
 
 import os
@@ -32,7 +33,7 @@ MCP_SECRET = os.getenv("MCP_SERVER_SECRET", "")
 
 @app.get("/")
 async def health():
-    return {"status": "Belmont MCP Server online", "tools": 20}
+    return {"status": "Belmont MCP Server online", "tools": 25}
 
 
 @app.get("/mcp/tools")
@@ -108,7 +109,7 @@ async def list_tools():
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                                 "search": {"type": "string", "description": "Name, email, or phone to search"}
+                        "search": {"type": "string", "description": "Name, email, or phone to search"}
                     }
                 }
             },
@@ -238,6 +239,22 @@ async def list_tools():
                 "description": "Refresh the QuickBooks OAuth token. Call this if QBO API calls are returning 401 errors.",
                 "input_schema": {"type": "object", "properties": {}}
             },
+            {
+                "name": "qbo_create_expense",
+                "description": "Record an expense or vendor bill in QuickBooks Online. Use for materials, subcontractors, fuel, tools, any business cost.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "vendor_name": {"type": "string", "description": "Vendor or payee name"},
+                        "amount": {"type": "number", "description": "Total expense amount in CAD"},
+                        "category": {"type": "string", "description": "Expense account name, e.g. 'Materials', 'Subcontractors', 'Fuel', 'Tools & Equipment'"},
+                        "date": {"type": "string", "description": "YYYY-MM-DD, defaults to today"},
+                        "memo": {"type": "string", "description": "Description or reference"},
+                        "payment_type": {"type": "string", "enum": ["Cash", "Check", "CreditCard"], "default": "CreditCard"}
+                    },
+                    "required": ["vendor_name", "amount"]
+                }
+            },
             # ── META BUSINESS SUITE ──────────────────────────────
             {
                 "name": "meta_get_page_posts",
@@ -275,6 +292,46 @@ async def list_tools():
                     },
                     "required": ["message"]
                 }
+            },
+            {
+                "name": "meta_get_campaigns",
+                "description": "Get all Facebook/Instagram ad campaigns from Meta Ads Manager. Shows spend, status, objective, and performance.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string", "enum": ["ACTIVE", "PAUSED", "ALL"], "default": "ALL"}
+                    }
+                }
+            },
+            {
+                "name": "meta_get_ad_insights",
+                "description": "Get ad performance metrics from Meta Ads Manager: spend, impressions, reach, clicks, CPM, CTR, leads generated.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "level": {"type": "string", "enum": ["campaign", "adset", "ad"], "default": "campaign"},
+                        "date_preset": {"type": "string", "enum": ["today", "yesterday", "last_7d", "last_30d", "this_month", "last_month"], "default": "last_30d"}
+                    }
+                }
+            },
+            {
+                "name": "meta_create_campaign",
+                "description": "Create a new Facebook/Instagram ad campaign in Meta Ads Manager.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Campaign name"},
+                        "objective": {"type": "string", "enum": ["LEAD_GENERATION", "BRAND_AWARENESS", "REACH", "TRAFFIC", "CONVERSIONS"], "default": "LEAD_GENERATION"},
+                        "daily_budget": {"type": "number", "description": "Daily budget in cents (e.g. 2000 = $20.00 CAD)"},
+                        "status": {"type": "string", "enum": ["ACTIVE", "PAUSED"], "default": "PAUSED"}
+                    },
+                    "required": ["name", "daily_budget"]
+                }
+            },
+            {
+                "name": "meta_get_ad_account_info",
+                "description": "Get the Belmont Meta ad account details: balance, spend limits, currency, account status.",
+                "input_schema": {"type": "object", "properties": {}}
             }
         ]
     }
@@ -309,147 +366,308 @@ async def execute_tool(request: Request, x_mcp_secret: str = Header(None)):
 # JOBTREAD TOOLS
 # ─────────────────────────────────────────────
 
+_jobtread_org_id: str = None
+
+
 async def jobtread_query(query: dict) -> dict:
-    """Execute a JobTread Pave API query."""
-    async with httpx.AsyncClient() as client:
+    """Execute a JobTread Pave API query. Auth via grantKey inside the query body."""
+    full_query = {"$": {"grantKey": JOBTREAD_KEY}, **query}
+    async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             "https://api.jobtread.com/pave",
-            json={"query": query},
-            headers={"Authorization": f"Bearer {JOBTREAD_KEY}"},
-            timeout=30
+            json={"query": full_query}
         )
-        resp.raise_for_status()
-        return resp.json()
+        if not resp.is_success:
+            return {"error": f"JobTread API {resp.status_code}: {resp.text[:400]}"}
+        data = resp.json()
+        if isinstance(data, dict) and data.get("errors"):
+            return {"error": str(data["errors"])}
+        print(f"[jobtread] query OK keys={list(data.keys())}")
+        return data
+
+
+async def get_jobtread_org_id() -> str:
+    """Fetch and cache the organization ID from the current grant."""
+    global _jobtread_org_id
+    if _jobtread_org_id:
+        return _jobtread_org_id
+    result = await jobtread_query({
+        "currentGrant": {
+            "user": {
+                "memberships": {
+                    "nodes": {
+                        "organization": {"id": {}, "name": {}}
+                    }
+                }
+            }
+        }
+    })
+    nodes = result.get("currentGrant", {}).get("user", {}).get("memberships", {}).get("nodes", [])
+    if nodes:
+        _jobtread_org_id = nodes[0]["organization"]["id"]
+        print(f"[jobtread] Org ID cached: {_jobtread_org_id}")
+        return _jobtread_org_id
+    raise Exception(f"Could not determine org ID from JobTread grant. Response: {result}")
 
 
 async def execute_jobtread(tool: str, params: dict) -> dict:
+
     if tool == "jobtread_list_jobs":
+        org_id = await get_jobtread_org_id()
         status = params.get("status", "active")
-        status_filter = {"$ne": "completed"} if status == "active" else (
-            "completed" if status == "completed" else None
-        )
-        query = {
-            "account": {
+        jobs_args: dict = {"size": 50}
+        if status == "active":
+            jobs_args["where"] = ["closedOn", "=", None]
+        elif status == "completed":
+            jobs_args["where"] = ["closedOn", "!=", None]
+        # "all" gets no filter
+        return await jobtread_query({
+            "organization": {
+                "$": {"id": org_id},
                 "jobs": {
-                    "$fields": ["id", "name", "status", "createdDate", "completedDate",
-                                "totalBudget", "totalCost", "customer"],
-                    "$filter": {"status": status_filter} if status_filter and status != "all" else {}
-                }
-            }
-        }
-        return await jobtread_query(query)
-
-    elif tool == "jobtread_get_job_details":
-        query = {
-            "account": {
-                "job": {
-                    "$args": {"id": params["job_id"]},
-                    "$fields": ["id", "name", "status", "description", "address",
-                                "totalBudget", "totalCost", "createdDate", "completedDate",
-                                "customer", "contacts", "notes", "lineItems", "expenses"]
-                }
-            }
-        }
-        return await jobtread_query(query)
-
-    elif tool == "jobtread_get_estimates":
-        query = {
-            "account": {
-                "estimates": {
-                    "$fields": ["id", "name", "status", "total", "createdDate", "sentDate",
-                                "approvedDate", "job", "lineItems"],
-                    "$filter": {"jobId": params["job_id"]} if params.get("job_id") else {}
-                }
-            }
-        }
-        return await jobtread_query(query)
-
-    elif tool == "jobtread_create_job":
-        query = {
-            "createJob": {
-                "$args": {
-                    "name": params["name"],
-                    "customerName": params.get("customer_name"),
-                    "customerEmail": params.get("customer_email"),
-                    "customerPhone": params.get("customer_phone"),
-                    "address": params.get("address"),
-                    "description": params.get("description"),
-                    "totalBudget": params.get("estimated_value")
-                },
-                "$fields": ["id", "name", "status"]
-            }
-        }
-        return await jobtread_query(query)
-
-    elif tool == "jobtread_add_note":
-        query = {
-            "createNote": {
-                "$args": {
-                    "jobId": params["job_id"],
-                    "content": params["note"]
-                },
-                "$fields": ["id", "content", "createdDate"]
-            }
-        }
-        return await jobtread_query(query)
-
-    elif tool == "jobtread_get_contacts":
-        query = {
-            "account": {
-                "contacts": {
-                    "$fields": ["id", "name", "email", "phone", "company", "jobs"],
-                    "$filter": {"search": params.get("search", "")}
-                }
-            }
-        }
-        return await jobtread_query(query)
-
-    elif tool == "jobtread_get_expenses":
-        query = {
-            "account": {
-                "expenses": {
-                    "$fields": ["id", "description", "amount", "date", "category", "job"],
-                    "$filter": {"jobId": params["job_id"]} if params.get("job_id") else {}
-                }
-            }
-        }
-        return await jobtread_query(query)
-
-    elif tool == "jobtread_budget_vs_actual":
-        details = await jobtread_query({
-            "account": {
-                "job": {
-                    "$args": {"id": params["job_id"]},
-                    "$fields": ["id", "name", "totalBudget", "totalCost", "lineItems", "expenses"]
+                    "$": jobs_args,
+                    "nodes": {
+                        "id": {}, "name": {}, "number": {}, "closedOn": {},
+                        "createdAt": {},
+                        "location": {
+                            "id": {}, "name": {}, "address": {},
+                            "account": {"id": {}, "name": {}}
+                        }
+                    },
+                    "nextPage": {}
                 }
             }
         })
-        job = details.get("account", {}).get("job", {})
-        budget = float(job.get("totalBudget") or 0)
-        actual = float(job.get("totalCost") or 0)
-        variance = budget - actual
-        return {
-            "job_id": params["job_id"],
-            "job_name": job.get("name"),
-            "budget": budget,
-            "actual_cost": actual,
-            "variance": variance,
-            "status": "OVER BUDGET" if variance < 0 else "ON BUDGET",
-            "percent_used": round((actual / budget * 100) if budget > 0 else 0, 1)
-        }
+
+    elif tool == "jobtread_get_job_details":
+        return await jobtread_query({
+            "job": {
+                "$": {"id": params["job_id"]},
+                "id": {}, "name": {}, "number": {}, "description": {},
+                "closedOn": {}, "createdAt": {},
+                "location": {
+                    "id": {}, "name": {}, "address": {},
+                    "account": {"id": {}, "name": {}}
+                },
+                "comments": {
+                    "nodes": {"id": {}, "message": {}, "createdAt": {}}
+                }
+            }
+        })
+
+    elif tool == "jobtread_get_estimates":
+        org_id = await get_jobtread_org_id()
+        docs_filter: dict = {"size": 20, "where": ["type", "=", "customerOrder"]}
+        if params.get("job_id"):
+            docs_filter["where"] = {
+                "and": [
+                    ["type", "=", "customerOrder"],
+                    [["job", "id"], "=", params["job_id"]]
+                ]
+            }
+        return await jobtread_query({
+            "organization": {
+                "$": {"id": org_id},
+                "documents": {
+                    "$": docs_filter,
+                    "nodes": {
+                        "id": {}, "name": {}, "number": {}, "status": {},
+                        "price": {}, "cost": {}, "createdAt": {},
+                        "job": {"id": {}, "name": {}}
+                    }
+                }
+            }
+        })
+
+    elif tool == "jobtread_create_job":
+        org_id = await get_jobtread_org_id()
+        customer_name = params.get("customer_name", "New Customer")
+
+        # Step 1: Search for existing customer account
+        search = await jobtread_query({
+            "organization": {
+                "$": {"id": org_id},
+                "accounts": {
+                    "$": {
+                        "size": 5,
+                        "where": {
+                            "and": [
+                                ["name", "=", customer_name],
+                                ["type", "=", "customer"]
+                            ]
+                        }
+                    },
+                    "nodes": {
+                        "id": {}, "name": {},
+                        "locations": {
+                            "nodes": {"id": {}, "name": {}, "address": {}}
+                        }
+                    }
+                }
+            }
+        })
+        accounts = search.get("organization", {}).get("accounts", {}).get("nodes", [])
+        account_id = None
+        location_id = None
+
+        if accounts:
+            account_id = accounts[0]["id"]
+            locs = accounts[0].get("locations", {}).get("nodes", [])
+            if locs:
+                location_id = locs[0]["id"]
+            print(f"[jobtread] Found existing account {account_id}")
+        else:
+            # Step 2: Create new customer account
+            create_acct = await jobtread_query({
+                "createAccount": {
+                    "$": {"organizationId": org_id, "name": customer_name, "type": "customer"},
+                    "createdAccount": {"id": {}, "name": {}}
+                }
+            })
+            acct = create_acct.get("createAccount", {}).get("createdAccount", {})
+            if not acct.get("id"):
+                return {"error": f"Failed to create customer account: {create_acct}"}
+            account_id = acct["id"]
+            print(f"[jobtread] Created account {account_id}")
+
+        # Step 3: Create location if none found
+        if not location_id:
+            loc_name = params.get("address") or f"{customer_name} Location"
+            loc_args: dict = {"accountId": account_id, "name": loc_name}
+            if params.get("address"):
+                loc_args["address"] = params["address"]
+                loc_args["parseAddress"] = True
+            create_loc = await jobtread_query({
+                "createLocation": {
+                    "$": loc_args,
+                    "createdLocation": {"id": {}, "name": {}, "address": {}}
+                }
+            })
+            loc = create_loc.get("createLocation", {}).get("createdLocation", {})
+            if not loc.get("id"):
+                return {"error": f"Failed to create location: {create_loc}"}
+            location_id = loc["id"]
+            print(f"[jobtread] Created location {location_id}")
+
+        # Step 4: Create the job
+        job_args: dict = {"locationId": location_id, "name": params["name"]}
+        if params.get("description"):
+            job_args["description"] = params["description"]
+        result = await jobtread_query({
+            "createJob": {
+                "$": job_args,
+                "createdJob": {"id": {}, "name": {}, "number": {}}
+            }
+        })
+        job = result.get("createJob", {}).get("createdJob", {})
+        if job.get("id"):
+            return {
+                "success": True,
+                "job_id": job["id"],
+                "job_name": job.get("name"),
+                "job_number": job.get("number"),
+                "customer": customer_name,
+                "location_id": location_id
+            }
+        return {"error": f"createJob response: {result}"}
+
+    elif tool == "jobtread_add_note":
+        return await jobtread_query({
+            "createComment": {
+                "$": {
+                    "targetId": params["job_id"],
+                    "targetType": "job",
+                    "message": params["note"]
+                },
+                "createdComment": {"id": {}, "message": {}, "createdAt": {}}
+            }
+        })
+
+    elif tool == "jobtread_get_contacts":
+        org_id = await get_jobtread_org_id()
+        search = params.get("search", "")
+        args: dict = {"size": 20, "where": ["type", "=", "customer"]}
+        return await jobtread_query({
+            "organization": {
+                "$": {"id": org_id},
+                "accounts": {
+                    "$": args,
+                    "nodes": {
+                        "id": {}, "name": {}, "type": {},
+                        "locations": {
+                            "nodes": {"id": {}, "address": {}}
+                        }
+                    }
+                }
+            }
+        })
+
+    elif tool == "jobtread_get_expenses":
+        if params.get("job_id"):
+            return await jobtread_query({
+                "job": {
+                    "$": {"id": params["job_id"]},
+                    "documents": {
+                        "$": {"where": ["type", "=", "vendorBill"], "size": 50},
+                        "nodes": {
+                            "id": {}, "name": {}, "number": {}, "status": {},
+                            "cost": {}, "createdAt": {}
+                        }
+                    }
+                }
+            })
+        else:
+            org_id = await get_jobtread_org_id()
+            return await jobtread_query({
+                "organization": {
+                    "$": {"id": org_id},
+                    "documents": {
+                        "$": {"where": ["type", "=", "vendorBill"], "size": 50},
+                        "nodes": {
+                            "id": {}, "name": {}, "number": {}, "status": {},
+                            "cost": {}, "createdAt": {},
+                            "job": {"id": {}, "name": {}}
+                        }
+                    }
+                }
+            })
+
+    elif tool == "jobtread_budget_vs_actual":
+        result = await jobtread_query({
+            "job": {
+                "$": {"id": params["job_id"]},
+                "id": {}, "name": {}, "number": {},
+                "documents": {
+                    "$": {
+                        "where": {
+                            "and": [
+                                ["type", "=", "customerOrder"],
+                                ["status", "=", "approved"]
+                            ]
+                        },
+                        "size": 50
+                    },
+                    "nodes": {
+                        "id": {}, "name": {}, "status": {},
+                        "price": {}, "cost": {}, "priceWithTax": {}
+                    }
+                }
+            }
+        })
+        return result
 
     elif tool == "jobtread_close_job":
-        query = {
+        from datetime import date
+        today = date.today().isoformat()
+        return await jobtread_query({
             "updateJob": {
-                "$args": {
-                    "id": params["job_id"],
-                    "status": "completed",
-                    "completionNotes": params.get("completion_notes", "")
-                },
-                "$fields": ["id", "name", "status"]
+                "$": {"id": params["job_id"], "closedOn": today},
+                "job": {
+                    "$": {"id": params["job_id"]},
+                    "id": {}, "name": {}, "closedOn": {}
+                }
             }
-        }
-        return await jobtread_query(query)
+        })
 
     return {"error": f"Unhandled JobTread tool: {tool}"}
 
@@ -609,6 +827,74 @@ async def execute_qbo(tool: str, params: dict) -> dict:
         token = await refresh_qbo_token()
         return {"success": bool(token), "message": "Token refreshed" if token else "Refresh failed"}
 
+    elif tool == "qbo_create_expense":
+        from datetime import date as _date
+        vendor_name = params["vendor_name"]
+        amount = params["amount"]
+        category = params.get("category", "Job Materials")
+        txn_date = params.get("date") or _date.today().isoformat()
+        memo = params.get("memo", "")
+        payment_type = params.get("payment_type", "CreditCard")
+
+        # Look up or create vendor
+        vendor_resp = await qbo_query(
+            f"SELECT Id, DisplayName FROM Vendor WHERE DisplayName LIKE '%{vendor_name}%' MAXRESULTS 1"
+        )
+        vendors = vendor_resp.get("QueryResponse", {}).get("Vendor", [])
+        if vendors:
+            vendor_id = vendors[0]["Id"]
+        else:
+            # Create vendor on the fly
+            create_resp = await qbo_request("POST", "vendor", json_body={"DisplayName": vendor_name})
+            vendor_id = create_resp.get("Vendor", {}).get("Id")
+            if not vendor_id:
+                return {"error": f"Could not find or create vendor '{vendor_name}': {create_resp}"}
+
+        # Look up expense account
+        acct_resp = await qbo_query(
+            f"SELECT Id, Name FROM Account WHERE AccountType = 'Cost of Goods Sold' OR AccountType = 'Expense' MAXRESULTS 50"
+        )
+        accounts = acct_resp.get("QueryResponse", {}).get("Account", [])
+        account_id = None
+        for a in accounts:
+            if category.lower() in a.get("Name", "").lower():
+                account_id = a["Id"]
+                break
+        if not account_id and accounts:
+            account_id = accounts[0]["Id"]  # fallback to first expense account
+
+        if not account_id:
+            return {"error": f"No expense account found for category '{category}'"}
+
+        body = {
+            "PaymentType": payment_type,
+            "EntityRef": {"value": vendor_id, "type": "Vendor"},
+            "TxnDate": txn_date,
+            "Line": [
+                {
+                    "Amount": amount,
+                    "DetailType": "AccountBasedExpenseLineDetail",
+                    "AccountBasedExpenseLineDetail": {
+                        "AccountRef": {"value": account_id}
+                    },
+                    "Description": memo or category
+                }
+            ]
+        }
+        if memo:
+            body["PrivateNote"] = memo
+
+        result = await qbo_request("POST", "purchase", json_body=body)
+        purchase = result.get("Purchase", {})
+        return {
+            "success": True,
+            "expense_id": purchase.get("Id"),
+            "amount": purchase.get("TotalAmt"),
+            "vendor": vendor_name,
+            "date": txn_date,
+            "memo": memo
+        } if purchase.get("Id") else {"error": f"Expense creation response: {result}"}
+
     return {"error": f"Unhandled QBO tool: {tool}"}
 
 
@@ -645,9 +931,47 @@ async def execute_meta(tool: str, params: dict) -> dict:
     elif tool == "meta_create_post":
         data = {"message": params["message"]}
         if params.get("scheduled_time"):
-            import time
             data["scheduled_publish_time"] = params["scheduled_time"]
             data["published"] = "false"
         return await meta_request(f"{META_PAGE_ID}/feed", method="POST", data=data)
+
+    elif tool == "meta_get_campaigns":
+        status_filter = params.get("status", "ALL")
+        p: dict = {
+            "fields": "id,name,status,objective,daily_budget,lifetime_budget,spend_cap,created_time,start_time,stop_time",
+            "limit": 25
+        }
+        if status_filter != "ALL":
+            p["effective_status"] = f'["{status_filter}"]'
+        return await meta_request(f"act_{META_AD_ACCOUNT}/campaigns", params=p)
+
+    elif tool == "meta_get_ad_insights":
+        level = params.get("level", "campaign")
+        date_preset = params.get("date_preset", "last_30d")
+        return await meta_request(
+            f"act_{META_AD_ACCOUNT}/insights",
+            params={
+                "level": level,
+                "date_preset": date_preset,
+                "fields": "campaign_name,adset_name,ad_name,spend,impressions,reach,clicks,cpm,ctr,actions,cost_per_action_type",
+                "limit": 50
+            }
+        )
+
+    elif tool == "meta_create_campaign":
+        data = {
+            "name": params["name"],
+            "objective": params.get("objective", "LEAD_GENERATION"),
+            "status": params.get("status", "PAUSED"),
+            "daily_budget": str(int(params["daily_budget"])),
+            "special_ad_categories": "[]"
+        }
+        return await meta_request(f"act_{META_AD_ACCOUNT}/campaigns", method="POST", data=data)
+
+    elif tool == "meta_get_ad_account_info":
+        return await meta_request(
+            f"act_{META_AD_ACCOUNT}",
+            params={"fields": "id,name,account_status,currency,balance,spend_cap,amount_spent,daily_spend_limit,timezone_name"}
+        )
 
     return {"error": f"Unhandled Meta tool: {tool}"}
