@@ -88,7 +88,7 @@ JACOB_CHAT_ID = os.getenv("JACOB_CHAT_ID", "")
 
 @app.get("/")
 async def health():
-    return {"status": "Belmont MCP Server online", "tools": 28}
+    return {"status": "Belmont MCP Server online", "tools": 31}
 
 
 @app.get("/diagnostic")
@@ -230,7 +230,7 @@ async def diagnostic():
         mark("weather", "red", f"Failed: {e}", "Check Railway outbound network")
 
     # Total tool count + final summary
-    report["total_tools_registered"] = 28
+    report["total_tools_registered"] = 31
     report["service"] = "mcp_server"
     s = report["summary"]
     report["overall"] = (
@@ -541,7 +541,7 @@ async def list_tools():
             # ── GOOGLE ───────────────────────────────────────────────────────
             {
                 "name": "google_calendar_today",
-                "description": "Get Jacob's Google Calendar events for today. Returns meetings, appointments, family events, and time blocks.",
+                "description": "Get Jacob's Google Calendar events for today (or any date). Returns meetings, appointments, family events, time blocks.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -550,13 +550,57 @@ async def list_tools():
                 }
             },
             {
+                "name": "google_calendar_week",
+                "description": "Get Jacob's Google Calendar events for the current week (Mon-Sun). Use for weekly planning and scheduling.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "week_offset": {"type": "integer", "description": "0=this week, 1=next week, -1=last week. Default 0."}
+                    }
+                }
+            },
+            {
+                "name": "google_calendar_create_event",
+                "description": "Create a new event on Jacob's Google Calendar. Use for scheduling site visits, client meetings, supplier calls, crew check-ins.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "Event title/summary"},
+                        "start_datetime": {"type": "string", "description": "Start time in YYYY-MM-DDTHH:MM format (24hr, Edmonton/Mountain time)"},
+                        "end_datetime": {"type": "string", "description": "End time in YYYY-MM-DDTHH:MM format. Defaults to 1hr after start."},
+                        "location": {"type": "string", "description": "Address or place name"},
+                        "description": {"type": "string", "description": "Event notes or agenda"},
+                        "attendee_emails": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional list of email addresses to invite"
+                        }
+                    },
+                    "required": ["title", "start_datetime"]
+                }
+            },
+            {
                 "name": "gmail_urgent",
-                "description": "Check Gmail for unread messages in the last 24 hours that look important or time-sensitive. Returns subject, sender, and snippet.",
+                "description": "Check Gmail for unread messages in the last 48 hours that look important or time-sensitive. Excludes promotions and social. Returns subject, sender, snippet.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "max_results": {"type": "integer", "description": "Max emails to return. Default 5."}
                     }
+                }
+            },
+            {
+                "name": "gmail_send",
+                "description": "Send an email from Jacob's Gmail account. Use for client follow-ups, sending estimates, scheduling confirmation, supplier orders.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "description": "Recipient email address"},
+                        "subject": {"type": "string", "description": "Email subject line"},
+                        "body": {"type": "string", "description": "Email body — plain text or simple HTML"},
+                        "cc": {"type": "string", "description": "Optional CC email address"}
+                    },
+                    "required": ["to", "subject", "body"]
                 }
             },
             # ── WEATHER ──────────────────────────────────────────────────────
@@ -591,7 +635,8 @@ async def execute_tool(request: Request, x_mcp_secret: str = Header(None)):
             result = await execute_qbo(tool_name, params)
         elif tool_name.startswith("meta_"):
             result = await execute_meta(tool_name, params)
-        elif tool_name in ("google_calendar_today", "gmail_urgent"):
+        elif tool_name in ("google_calendar_today", "google_calendar_week",
+                           "google_calendar_create_event", "gmail_urgent", "gmail_send"):
             result = await execute_google(tool_name, params)
         elif tool_name == "weather_red_deer_forecast":
             result = await execute_weather(params)
@@ -1302,21 +1347,31 @@ async def execute_google(tool: str, params: dict) -> dict:
 
     try:
         from googleapiclient.discovery import build
+        import pytz
+        from datetime import datetime as dt, timedelta
+        edmonton = pytz.timezone("America/Edmonton")
 
-        if tool == "google_calendar_today":
-            from datetime import datetime as dt
-            import pytz
-            edmonton = pytz.timezone("America/Edmonton")
-            date_str = params.get("date") or dt.now(edmonton).strftime("%Y-%m-%d")
-            # Build RFC3339 bounds in Edmonton time
-            day_start = edmonton.localize(dt.strptime(date_str, "%Y-%m-%d")).isoformat()
-            day_end = edmonton.localize(dt.strptime(date_str + " 23:59:59", "%Y-%m-%d %H:%M:%S")).isoformat()
-
+        if tool in ("google_calendar_today", "google_calendar_week"):
             service_obj = build("calendar", "v3", credentials=creds)
+
+            if tool == "google_calendar_today":
+                date_str = params.get("date") or dt.now(edmonton).strftime("%Y-%m-%d")
+                day_start = edmonton.localize(dt.strptime(date_str, "%Y-%m-%d"))
+                day_end = day_start + timedelta(hours=23, minutes=59, seconds=59)
+                label = date_str
+            else:  # google_calendar_week
+                offset = int(params.get("week_offset", 0))
+                today = dt.now(edmonton).date()
+                mon = today - timedelta(days=today.weekday()) + timedelta(weeks=offset)
+                sun = mon + timedelta(days=6)
+                day_start = edmonton.localize(dt.combine(mon, dt.min.time()))
+                day_end = edmonton.localize(dt.combine(sun, dt.max.time().replace(microsecond=0)))
+                label = f"{mon.isoformat()} to {sun.isoformat()}"
+
             events_result = service_obj.events().list(
                 calendarId="primary",
-                timeMin=day_start,
-                timeMax=day_end,
+                timeMin=day_start.isoformat(),
+                timeMax=day_end.isoformat(),
                 singleEvents=True,
                 orderBy="startTime"
             ).execute()
@@ -1332,8 +1387,48 @@ async def execute_google(tool: str, params: dict) -> dict:
                     "location": e.get("location", ""),
                     "description": (e.get("description", "") or "")[:150],
                     "attendees": len(e.get("attendees", [])),
+                    "event_id": e.get("id", ""),
                 })
-            return {"events": simplified, "count": len(simplified), "date": date_str}
+            return {"events": simplified, "count": len(simplified), "period": label}
+
+        elif tool == "google_calendar_create_event":
+            import base64
+            service_obj = build("calendar", "v3", credentials=creds)
+            title = params["title"]
+            start_str = params["start_datetime"]  # YYYY-MM-DDTHH:MM
+            end_str = params.get("end_datetime")
+
+            # Parse and localize start time
+            start_dt = edmonton.localize(dt.strptime(start_str, "%Y-%m-%dT%H:%M"))
+            if end_str:
+                end_dt = edmonton.localize(dt.strptime(end_str, "%Y-%m-%dT%H:%M"))
+            else:
+                end_dt = start_dt + timedelta(hours=1)
+
+            event_body = {
+                "summary": title,
+                "start": {"dateTime": start_dt.isoformat(), "timeZone": "America/Edmonton"},
+                "end": {"dateTime": end_dt.isoformat(), "timeZone": "America/Edmonton"},
+            }
+            if params.get("location"):
+                event_body["location"] = params["location"]
+            if params.get("description"):
+                event_body["description"] = params["description"]
+            if params.get("attendee_emails"):
+                event_body["attendees"] = [{"email": e} for e in params["attendee_emails"]]
+
+            created = service_obj.events().insert(
+                calendarId="primary",
+                body=event_body,
+                sendUpdates="all" if params.get("attendee_emails") else "none"
+            ).execute()
+            return {
+                "success": True,
+                "event_id": created.get("id"),
+                "title": created.get("summary"),
+                "start": created["start"].get("dateTime"),
+                "html_link": created.get("htmlLink"),
+            }
 
         elif tool == "gmail_urgent":
             max_results = int(params.get("max_results", 5))
@@ -1358,6 +1453,34 @@ async def execute_google(tool: str, params: dict) -> dict:
                     "snippet": msg.get("snippet", "")[:150]
                 })
             return {"emails": emails, "unread_count": len(emails)}
+
+        elif tool == "gmail_send":
+            import base64
+            from email.mime.text import MIMEText
+            from email.mime.multipart import MIMEMultipart
+            service_obj = build("gmail", "v1", credentials=creds)
+            to = params["to"]
+            subject = params["subject"]
+            body = params["body"]
+            cc = params.get("cc", "")
+
+            msg = MIMEMultipart("alternative")
+            msg["To"] = to
+            msg["Subject"] = subject
+            if cc:
+                msg["Cc"] = cc
+            msg.attach(MIMEText(body, "plain"))
+
+            raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+            sent = service_obj.users().messages().send(
+                userId="me", body={"raw": raw}
+            ).execute()
+            return {
+                "success": True,
+                "message_id": sent.get("id"),
+                "to": to,
+                "subject": subject,
+            }
 
     except Exception as ex:
         return {"error": str(ex)}
