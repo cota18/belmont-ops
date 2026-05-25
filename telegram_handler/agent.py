@@ -142,11 +142,13 @@ async def run_agent(
     message: str,
     memory_context: str = "",
     chat_id: str = "default",
-    vision_content: list = None
+    vision_content: list = None,
+    conversation_history: list = None
 ) -> str:
     """
     Run Claude with tool-use loop against the MCP server.
     Supports optional vision_content for image/photo messages.
+    conversation_history: list of {role, content} dicts for within-session recall.
     """
     if not ANTHROPIC_KEY:
         return "Error: ANTHROPIC_API_KEY is not set."
@@ -180,13 +182,15 @@ async def run_agent(
 
     model = MODEL_HEAVY if agent_type in HEAVY_AGENTS else MODEL_FAST
 
-    # Build initial user message — support vision content
+    # Build message list — prepend conversation history for within-session recall
     if vision_content:
         user_message_content = vision_content
     else:
         user_message_content = message
 
-    messages = [{"role": "user", "content": user_message_content}]
+    # Start with recent conversation history (last N turns), then current message
+    messages = list(conversation_history) if conversation_history else []
+    messages.append({"role": "user", "content": user_message_content})
 
     headers = {
         "x-api-key": ANTHROPIC_KEY,

@@ -34,6 +34,26 @@ from templates import (
     list_pricing, get_pricing
 )
 
+# ── In-memory conversation buffer ─────────────────────────────────────────────
+# Stores the last N message pairs per chat_id for within-session recall.
+# Resets on redeploy — Zep handles cross-session long-term memory.
+_MAX_HISTORY = 8  # last 8 turns (16 messages) — enough context without bloat
+_conversation_buffers: dict[str, list] = {}
+
+def get_history(chat_id: str) -> list:
+    return _conversation_buffers.get(str(chat_id), [])
+
+def add_to_history(chat_id: str, user_msg: str, assistant_msg: str):
+    key = str(chat_id)
+    if key not in _conversation_buffers:
+        _conversation_buffers[key] = []
+    buf = _conversation_buffers[key]
+    buf.append({"role": "user", "content": user_msg})
+    buf.append({"role": "assistant", "content": assistant_msg})
+    # Keep only the last _MAX_HISTORY * 2 messages
+    if len(buf) > _MAX_HISTORY * 2:
+        _conversation_buffers[key] = buf[-(  _MAX_HISTORY * 2):]
+
 @app.on_event("startup")
 async def startup():
     # Startup env var validation — visible in Railway logs
@@ -374,16 +394,20 @@ async def process_message_async(chat_id: str, user_message: str, agent_type: str
     session_id = await get_session_id(agent_type, str(chat_id))
     await ensure_session(session_id, agent_type)
     memory_ctx = await load_memory(session_id, query=user_message)
+    history = get_history(str(chat_id))
     try:
         result = await run_agent(
             agent_type=agent_type,
             message=user_message,
             memory_context=memory_ctx,
             chat_id=str(chat_id),
-            vision_content=vision_content
+            vision_content=vision_content,
+            conversation_history=history
         )
     except Exception as e:
         result = f"Agent error: {e}"
+    # Save to both in-memory buffer (instant recall) and Zep (long-term)
+    add_to_history(str(chat_id), user_message, result)
     await save_exchange(session_id, user_message, result)
     await send_telegram(chat_id, result)
 
@@ -1067,6 +1091,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     session_id = await get_session_id(agent_type, str(chat_id))
     await ensure_session(session_id, agent_type)
     memory_ctx = await load_memory(session_id, query=user_text)
+    history = get_history(str(chat_id))
 
     try:
         result = await run_agent(
@@ -1074,11 +1099,13 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             message=user_text,
             memory_context=memory_ctx,
             chat_id=str(chat_id),
-            vision_content=vision_content
+            vision_content=vision_content,
+            conversation_history=history
         )
     except Exception as e:
         result = f"Error: {e}"
 
+    add_to_history(str(chat_id), user_text, result)
     await save_exchange(session_id, user_text, result)
     await send_telegram(chat_id, result)
     return JSONResponse({"ok": True})

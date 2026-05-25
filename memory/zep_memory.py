@@ -80,13 +80,22 @@ async def load_memory(session_id: str, query: str = None) -> str:
     zep = get_client()
     context_parts = []
 
-    # ── Session summary ──────────────────────────────────────────────────
+    # ── Session summary + recent raw messages ────────────────────────────
     try:
         memory = await zep.memory.get(session_id, lastn=10)
-        if memory.summary:
-            context_parts.append(f"RECENT SESSION SUMMARY:\n{memory.summary.content}")
+        # Raw recent messages — used for cross-session context when buffer resets
+        if memory.messages:
+            recent_lines = []
+            for m in memory.messages[-6:]:  # last 6 messages max
+                role = "Jacob" if m.role_type == "user" else "Agent"
+                recent_lines.append(f"[{role}]: {(m.content or '')[:300]}")
+            if recent_lines:
+                context_parts.append("RECENT EXCHANGE (from last session):\n" + "\n".join(recent_lines))
+        # AI summary for longer context
+        if memory.summary and memory.summary.content:
+            context_parts.append(f"SESSION SUMMARY:\n{memory.summary.content}")
     except Exception as e:
-        print(f"[Zep] load session summary failed (silenced): {e}")
+        print(f"[Zep] load session memory failed (silenced): {e}")
 
     # ── Semantic search ──────────────────────────────────────────────────
     if query:
