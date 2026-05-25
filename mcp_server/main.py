@@ -36,7 +36,7 @@ async def validate_env_on_startup():
         "META_PAGE_ID": "Meta page tools",
         "GOOGLE_CLIENT_ID": "Google Calendar + Gmail",
         "GOOGLE_CLIENT_SECRET": "Google Calendar + Gmail",
-        "GOOGLE_REFRESH_TOKEN": "Google Calendar + Gmail (single token for both)",
+        "GOOGLE_REFRESH_TOKEN": "Google Calendar + Gmail (also accepts GMAIL_TOKEN or GOOGLE_CALENDAR_TOKEN)",
         "GOOGLE_ACCESS_TOKEN": "Google current access token (auto-refreshed)",
         "TELEGRAM_TOKEN": "Briefing push",
         "JACOB_CHAT_ID": "Briefing push",
@@ -188,14 +188,19 @@ async def diagnostic():
     # ── GOOGLE ────────────────────────────────────────────────────────────
     g_cid = os.getenv("GOOGLE_CLIENT_ID", "")
     g_cs = os.getenv("GOOGLE_CLIENT_SECRET", "")
-    g_refresh = os.getenv("GOOGLE_REFRESH_TOKEN", "")
+    # Accept any of these var names for the refresh token
+    g_refresh = (
+        os.getenv("GOOGLE_REFRESH_TOKEN", "") or
+        os.getenv("GMAIL_TOKEN", "") or
+        os.getenv("GOOGLE_CALENDAR_TOKEN", "")
+    )
 
     if not (g_cid and g_cs):
         mark("google", "red", "GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set",
              "Create OAuth credentials at console.cloud.google.com")
     elif not g_refresh or g_refresh in ("PENDING", ""):
-        mark("google", "yellow", "GOOGLE_REFRESH_TOKEN not set — run scripts/google_oauth.js locally",
-             "cd belmont-ops/scripts && node google_oauth.js")
+        mark("google", "yellow", "No Google refresh token set",
+             "Set GOOGLE_REFRESH_TOKEN (or GMAIL_TOKEN / GOOGLE_CALENDAR_TOKEN) on Railway")
     else:
         try:
             test = await execute_google("google_calendar_today", {})
@@ -1309,17 +1314,22 @@ async def execute_meta(tool: str, params: dict) -> dict:
 async def _get_google_creds():
     """
     Build Google OAuth2 Credentials from env vars.
-    Uses a single GOOGLE_REFRESH_TOKEN that covers both Calendar and Gmail scopes.
+    Accepts GOOGLE_REFRESH_TOKEN, GMAIL_TOKEN, or GOOGLE_CALENDAR_TOKEN — whichever is set.
     The google-auth library auto-refreshes the access_token when it expires.
     """
     from google.oauth2.credentials import Credentials
-    refresh_token = os.getenv("GOOGLE_REFRESH_TOKEN", "")
+    # Accept any of these var names — whichever Jacob sets on Railway
+    refresh_token = (
+        os.getenv("GOOGLE_REFRESH_TOKEN", "") or
+        os.getenv("GMAIL_TOKEN", "") or
+        os.getenv("GOOGLE_CALENDAR_TOKEN", "")
+    )
     access_token = os.getenv("GOOGLE_ACCESS_TOKEN", "")
     client_id = os.getenv("GOOGLE_CLIENT_ID", "")
     client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")
 
     if not refresh_token or refresh_token in ("PENDING", ""):
-        return None, "Google not authorized — run scripts/google_oauth.js to complete setup"
+        return None, "Google not authorized — set GOOGLE_REFRESH_TOKEN (or GMAIL_TOKEN / GOOGLE_CALENDAR_TOKEN) on Railway"
     if not (client_id and client_secret):
         return None, "GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set"
 
