@@ -51,7 +51,32 @@ QUICK_COMMANDS = {
     "/subs": "List all subcontractors stored in memory for Belmont. Show name, trade, rate, and last job worked together. If none are stored yet, say so and explain how to add them.",
     "/pipeline": "Pull all open estimates from JobTread. Calculate total pipeline value, average estimate size, and which ones are oldest. Rank by age and flag any over 14 days.",
     "/exit": "Check my exit tracker. Based on current QBO revenue data, how am I tracking toward the $8K/month net income target for 6 consecutive months? What's the gap and what's the fastest path to closing it?",
+    "/weather": "Call weather_red_deer_forecast for the next 3 days. Flag any outdoor-work risk (deck, framing, concrete, roof) and tell me what to reschedule.",
+    "/promises": "Search Zep memory for commitments I've made in the last 14 days (anything I said I'd do by a date). List them with status: kept, pending, or dropped. Be direct — call out anything I've ghosted.",
+    "/decisions": "Search Zep memory for major business decisions I've logged. Show last 10 with the reasoning I gave at the time. Useful for reviewing my own thinking.",
+    "/lessons": "Search Zep memory for lessons logged from past jobs. Pull the top 8 most relevant ones. These are my hard-earned rules — surface them.",
+    "/network": "Search Zep memory for all builders, subs, vendors, and referral sources I've mentioned. Group by role. Flag anyone I haven't talked to in 60+ days as 'gone cold'.",
+    "/wins": "Search Zep memory for daily wins I've logged in the last 14 days. Summarize momentum in 2-3 sentences. Be honest — if I've been dropping the ball, say so.",
 }
+
+# Estimate templates — quick ballparks. Detailed estimates still go through the estimating agent.
+ESTIMATE_TEMPLATE_PROMPT = (
+    "Jacob wants a fast ballpark estimate. Use the Central Alberta 2026 cost knowledge "
+    "in your system prompt. Pick the right tier from the input. Output format:\n\n"
+    "PROJECT: [type]\n"
+    "ASSUMPTIONS: [scope assumptions in 1 line]\n"
+    "BREAKDOWN:\n"
+    "- Materials: $X\n"
+    "- Labour: $X\n"
+    "- Subs: $X\n"
+    "- Contingency (10-15%): $X\n"
+    "- GST (5%): $X\n"
+    "TOTAL RANGE: $low - $high CAD\n"
+    "CONFIDENCE: low/medium/high based on detail given\n"
+    "ASK: 1-3 questions Jacob should clarify before quoting client.\n\n"
+    "Be specific. Use real Belmont numbers. No fluff.\n\n"
+    "Input: "
+)
 
 BJJ_LOG_KEYWORDS = ["/bjj", "trained bjj", "bjj session", "rolled today", "mat time"]
 SUB_ADD_KEYWORDS = ["add sub", "new sub", "add subcontractor", "new subcontractor"]
@@ -309,6 +334,16 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             "/ads — Meta ad performance\n"
             "/recap — Full business snapshot\n"
             "/exit — Exit tracker (TopTick)\n"
+            "/weather — 3-day Red Deer forecast + outdoor work risk\n"
+            "\n<b>Estimating</b>\n"
+            "/quote [description] — Fast ballpark estimate\n"
+            "  e.g. /quote 600sqft composite deck with glass railing\n"
+            "\n<b>Discipline + Memory</b>\n"
+            "/promises — What I said I'd do (status check)\n"
+            "/decisions — Major decisions logged + reasoning\n"
+            "/lessons — Hard-earned rules from past jobs\n"
+            "/wins — Daily wins logged, momentum check\n"
+            "/network — Builders, subs, vendors, referrals\n"
             "\n<b>People</b>\n"
             "/subs — Subcontractor list\n"
             "/bjj — Log BJJ session\n"
@@ -316,12 +351,28 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             "/status — System health\n"
             "/help — This menu\n\n"
             "Or ask me anything in plain English.\n"
-            "Send a photo with 'receipt' in the caption to log an expense."
+            "Send a photo with 'receipt' in the caption to log an expense.\n"
+            "Send a voice memo and I'll transcribe + handle it."
         )
         await send_telegram(chat_id, help_text)
         return JSONResponse({"ok": True})
 
-    if text_lower in QUICK_COMMANDS:
+    # /quote with text after it -> ballpark estimate
+    if text_lower.startswith("/quote"):
+        quote_input = user_text[len("/quote"):].strip()
+        if not quote_input:
+            await send_telegram(
+                chat_id,
+                "Format: /quote [project description]\n\n"
+                "Examples:\n"
+                "/quote 600sqft composite deck with glass railing in Red Deer\n"
+                "/quote 80sqft master bath reno mid-spec curbless shower\n"
+                "/quote 400sqft single-storey addition standard finish"
+            )
+            return JSONResponse({"ok": True})
+        user_text = ESTIMATE_TEMPLATE_PROMPT + quote_input
+
+    elif text_lower in QUICK_COMMANDS:
         user_text = QUICK_COMMANDS[text_lower]
 
     elif any(k in text_lower for k in BJJ_LOG_KEYWORDS):
@@ -370,6 +421,139 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
 
 
 # ─────────────────────────────────────────────
+# LEAD SCORING
+# ─────────────────────────────────────────────
+
+def score_lead(name: str, email: str, phone: str, project: str, message: str) -> dict:
+    """
+    Score an inbound lead 1-10 based on Belmont Ideal Client Profile signals.
+    Returns dict with score, tier, urgency, reasoning, recommended action.
+
+    Belmont ICP:
+    - Red Deer / Central AB
+    - Minimum $25K, prefer $75K+ renos, $400K+ custom
+    - Values craftsmanship, not price shoppers
+    - Decision-makers
+    """
+    text_blob = f"{project} {message}".lower()
+    score = 5  # neutral start
+    reasons = []
+
+    # ── BUDGET / SCOPE SIGNALS ────────────────────────────────────────────
+    high_value_kw = [
+        "custom home", "build a home", "new build", "addition", "second storey",
+        "second-storey", "ensuite", "primary bath", "master bath",
+        "full kitchen", "kitchen reno", "major reno", "whole home"
+    ]
+    med_value_kw = ["bathroom", "kitchen", "basement", "deck"]
+    low_value_kw = ["handyman", "small", "quick fix", "minor", "repair", "patch", "touch up"]
+
+    if any(kw in text_blob for kw in high_value_kw):
+        score += 3
+        reasons.append("high-value project signal")
+    elif any(kw in text_blob for kw in med_value_kw):
+        score += 1
+        reasons.append("mid-value project type")
+    if any(kw in text_blob for kw in low_value_kw):
+        score -= 3
+        reasons.append("low-value project signal — may not fit ICP")
+
+    # Explicit budget signals
+    import re
+    budget_match = re.search(r'\$?\s*(\d{1,3}(?:,\d{3})*|\d+)\s*(?:k|K|,000)?', text_blob)
+    if budget_match:
+        try:
+            raw = budget_match.group(1).replace(",", "")
+            num = int(raw)
+            if "k" in budget_match.group(0).lower() or "000" in budget_match.group(0):
+                num *= 1000
+            if num >= 100000:
+                score += 2
+                reasons.append(f"budget ${num:,} stated — strong fit")
+            elif num >= 25000:
+                score += 1
+                reasons.append(f"budget ${num:,} stated — fits minimum")
+            elif num < 25000 and num > 1000:
+                score -= 2
+                reasons.append(f"budget ${num:,} stated — below Belmont minimum")
+        except Exception:
+            pass
+
+    # ── LOCATION SIGNALS ──────────────────────────────────────────────────
+    central_ab = [
+        "red deer", "blackfalds", "sylvan lake", "lacombe", "ponoka",
+        "innisfail", "olds", "rocky mountain house", "stettler",
+        "central alberta", "alberta", "ab "
+    ]
+    if any(c in text_blob for c in central_ab):
+        score += 1
+        reasons.append("location in Central AB")
+    elif any(x in text_blob for x in ["calgary", "edmonton"]):
+        score -= 1
+        reasons.append("outside Belmont primary market")
+
+    # ── URGENCY SIGNALS ───────────────────────────────────────────────────
+    urgency = "normal"
+    if any(kw in text_blob for kw in ["asap", "urgent", "as soon as", "this week", "tomorrow", "right away"]):
+        urgency = "high"
+        score += 1
+        reasons.append("urgency stated")
+    elif any(kw in text_blob for kw in ["next year", "down the road", "thinking about", "just curious", "exploring"]):
+        urgency = "low"
+        score -= 1
+        reasons.append("low urgency / exploratory")
+
+    # ── DECISION-MAKER SIGNALS ────────────────────────────────────────────
+    if any(kw in text_blob for kw in ["my wife and i", "my husband and i", "we are", "we're looking", "we want", "we'd like"]):
+        score += 1
+        reasons.append("decision-maker language ('we')")
+
+    # ── PRICE-SHOPPER FLAGS (negative) ────────────────────────────────────
+    if any(kw in text_blob for kw in ["cheap", "cheapest", "lowest price", "best price", "discount", "deal"]):
+        score -= 2
+        reasons.append("price-shopper language — likely poor fit")
+
+    # ── CONTACT QUALITY ───────────────────────────────────────────────────
+    if email and phone:
+        score += 1
+        reasons.append("both phone + email provided")
+    elif not (email or phone):
+        score -= 2
+        reasons.append("no contact info — hard to reach")
+
+    # ── MESSAGE DEPTH ─────────────────────────────────────────────────────
+    if message and len(message) > 200:
+        score += 1
+        reasons.append("detailed message — serious inquiry")
+    elif message and len(message) < 20:
+        score -= 1
+        reasons.append("very short message")
+
+    score = max(1, min(10, score))
+
+    if score >= 8:
+        tier = "HOT"
+        action = "Call now. Speed-to-lead wins. Don't email first — call."
+    elif score >= 6:
+        tier = "WARM"
+        action = "Call within 1 hour. Email follow-up if no answer."
+    elif score >= 4:
+        tier = "COOL"
+        action = "Email response within 4 hours. Qualify before booking site visit."
+    else:
+        tier = "COLD"
+        action = "Acknowledge politely, ask 2-3 qualifying questions before further effort."
+
+    return {
+        "score": score,
+        "tier": tier,
+        "urgency": urgency,
+        "reasons": reasons,
+        "recommended_action": action
+    }
+
+
+# ─────────────────────────────────────────────
 # LEAD INTAKE WEBHOOK
 # ─────────────────────────────────────────────
 
@@ -409,27 +593,43 @@ async def new_lead(request: Request, background_tasks: BackgroundTasks):
     if not name and not email and not phone:
         return JSONResponse({"ok": True, "note": "No lead data found"})
 
-    # Notify Jacob immediately
+    # ── Score the lead before alerting Jacob ──────────────────────────────
+    scoring = score_lead(name, email, phone, project, message)
+
+    # Notify Jacob immediately with score
+    tier_emoji = {
+        "HOT": "🔥",
+        "WARM": "⚡",
+        "COOL": "📬",
+        "COLD": "❄️"
+    }.get(scoring["tier"], "")
+
     alert = (
-        f"<b>New Lead from Website</b>\n\n"
+        f"<b>{tier_emoji} New Lead — {scoring['tier']} ({scoring['score']}/10)</b>\n\n"
         f"<b>{name or 'Unknown'}</b>\n"
         + (f"Project: {project}\n" if project else "")
         + (f"Email: {email}\n" if email else "")
         + (f"Phone: {phone}\n" if phone else "")
         + (f"Message: {message[:200]}\n" if message else "")
-        + "\nDrafting response..."
+        + f"\n<b>Action:</b> {scoring['recommended_action']}\n"
+        + f"<b>Why this score:</b> " + "; ".join(scoring['reasons'][:4])
+        + "\n\nDrafting response..."
     )
     await send_telegram(JACOB_CHAT_ID, alert)
 
-    # Trigger agent to draft outreach
+    # Trigger agent to draft outreach — pass scoring context so reply matches tier
     prompt = (
-        f"New lead from Belmont website:\n"
+        f"New lead from Belmont website (scored {scoring['score']}/10, tier: {scoring['tier']}):\n"
         f"Name: {name}\nEmail: {email}\nPhone: {phone}\n"
-        f"Project interest: {project}\nMessage: {message}\n\n"
+        f"Project interest: {project}\nMessage: {message}\n"
+        f"Urgency: {scoring['urgency']}\n\n"
         "Draft a personalized first response in Jacob's voice that:\n"
         "1. Acknowledges their specific project\n"
         "2. Establishes Belmont's premium positioning (not the cheapest, the best)\n"
-        "3. Proposes a specific next step — site visit or 15-min call\n"
+        "3. Proposes a specific next step matching the tier:\n"
+        "   - HOT/WARM: direct ask for a 15-min call this week, suggest 2 time windows\n"
+        "   - COOL: ask 2-3 qualifying questions, propose a call after they reply\n"
+        "   - COLD: polite acknowledgement + qualifying questions, no time ask\n"
         "4. Under 120 words. No fluff.\n\n"
         "Present it ready to copy-paste. Then ask Jacob to confirm or adjust before sending."
     )
@@ -438,4 +638,4 @@ async def new_lead(request: Request, background_tasks: BackgroundTasks):
         process_message_async, JACOB_CHAT_ID, prompt, "comms"
     )
 
-    return JSONResponse({"ok": True, "lead": name})
+    return JSONResponse({"ok": True, "lead": name, "score": scoring["score"], "tier": scoring["tier"]})

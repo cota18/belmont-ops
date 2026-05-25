@@ -65,7 +65,7 @@ async def trigger_agent_task(message: str):
 # ── MORNING BRIEF ─────────────────────────────────────────────────────────────
 
 async def morning_brief():
-    """Daily 7:00 AM Mountain — full briefing via MCP /briefing endpoint."""
+    """Daily 7:00 AM Mountain — full briefing via MCP /briefing endpoint + weather + commitments."""
     try:
         async with httpx.AsyncClient(timeout=90) as client:
             resp = await client.post(
@@ -83,6 +83,24 @@ async def morning_brief():
                 )
     except Exception as e:
         print(f"[scheduler] Morning brief error: {e}")
+
+    # Commitment check — query Zep for promises due today or overdue
+    try:
+        await commitment_morning_check()
+    except Exception as e:
+        print(f"[scheduler] Commitment check error: {e}")
+
+
+# ── COMMITMENT MORNING CHECK ──────────────────────────────────────────────────
+
+async def commitment_morning_check():
+    """Surface open commitments from Zep memory — anything Jacob said he'd do that's due today or overdue."""
+    await trigger_agent_task(
+        "Check Zep memory for commitments Jacob has logged in the last 14 days "
+        "(messages where he said he'd do X by a specific date). "
+        "List the ones due today or overdue. Be direct — name them and ask if they're done. "
+        "If none, say 'No outstanding commitments tracked.' Keep it under 100 words."
+    )
 
 
 # ── ESTIMATE FOLLOW-UP ENGINE ─────────────────────────────────────────────────
@@ -229,6 +247,18 @@ async def friday_debrief():
         "2. What's the one thing that would make next week a win?\n"
         "3. What needs to happen first Monday morning?\n\n"
         "<i>I'll remember your answers.</i>"
+    )
+    await send_telegram(msg)
+
+
+# ── DAILY WIN CAPTURE ─────────────────────────────────────────────────────────
+
+async def daily_win_capture():
+    """8:00 PM M-Th — quick discipline ping. One line, what shipped today?"""
+    msg = (
+        "<b>End of Day</b>\n\n"
+        "One sentence: what shipped today?\n\n"
+        "<i>Reply with anything — I'll log it. Skip if you've got nothing.</i>"
     )
     await send_telegram(msg)
 
@@ -408,6 +438,9 @@ def start_scheduler():
     # Friday 5 PM — debrief questions
     scheduler.add_job(friday_debrief, CronTrigger(hour=17, minute=0, day_of_week="fri"))
 
+    # Mon-Thu 8 PM — daily win capture
+    scheduler.add_job(daily_win_capture, CronTrigger(hour=20, minute=0, day_of_week="mon-thu"))
+
     # Sunday 8 PM — pre-week recap
     scheduler.add_job(sunday_recap, CronTrigger(hour=20, minute=0, day_of_week="sun"))
 
@@ -416,9 +449,10 @@ def start_scheduler():
 
     scheduler.start()
     print(
-        "Scheduler started: morning brief (M-F 7am), estimate follow-up (M-F 9am), "
-        "margin guardian (Mon 8:30am), Meta check (Tue 9am), invoice alert (Wed 9am), "
-        "cash summary (Fri 4pm), debrief (Fri 5pm), Sunday recap (Sun 8pm), "
+        "Scheduler started: morning brief+weather+commitments (M-F 7am), "
+        "estimate follow-up (M-F 9am), margin guardian (Mon 8:30am), "
+        "Meta check (Tue 9am), invoice alert (Wed 9am), cash summary (Fri 4pm), "
+        "debrief (Fri 5pm), daily win capture (M-Th 8pm), Sunday recap (Sun 8pm), "
         "exit tracker (1st of month)"
     )
     return scheduler

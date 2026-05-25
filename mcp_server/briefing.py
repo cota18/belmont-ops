@@ -176,6 +176,22 @@ async def generate_briefing() -> str:
 
         lines.append("")
 
+        # ── WEATHER (Red Deer) ────────────────────────────────────────────────
+        weather = await call_tool(client, "weather_red_deer_forecast", {"days": 3})
+        if "error" not in weather and weather.get("forecast"):
+            f0 = weather["forecast"][0]
+            lines.append(
+                f"*Today's Weather:* {f0.get('condition', '?')}, "
+                f"{f0.get('low_c', '?')}-{f0.get('high_c', '?')}C, "
+                f"{f0.get('precip_chance_pct', 0)}% precip"
+            )
+            risk_flags = weather.get("outdoor_risk_flags", [])
+            if risk_flags:
+                lines.append("*Outdoor Work Risk:*")
+                for r in risk_flags[:3]:
+                    lines.append(f"  ⚠️ {r}")
+            lines.append("")
+
         # ── URGENT EMAIL ──────────────────────────────────────────────────────
         email = await call_tool(client, "gmail_urgent", {"max_results": 3})
         if "error" not in email and email.get("emails"):

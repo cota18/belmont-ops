@@ -38,7 +38,7 @@ JACOB_CHAT_ID = os.getenv("JACOB_CHAT_ID", "")
 
 @app.get("/")
 async def health():
-    return {"status": "Belmont MCP Server online", "tools": 27}
+    return {"status": "Belmont MCP Server online", "tools": 28}
 
 
 @app.get("/mcp/tools")
@@ -358,6 +358,17 @@ async def list_tools():
                         "max_results": {"type": "integer", "description": "Max emails to return. Default 5."}
                     }
                 }
+            },
+            # ── WEATHER ──────────────────────────────────────────────────────
+            {
+                "name": "weather_red_deer_forecast",
+                "description": "Get the 3-day weather forecast for Red Deer, Alberta. Returns daily high/low temp in Celsius, precipitation, wind, and a plain-English summary. Use to flag outdoor work risks (deck, framing, roofing, concrete) when rain, snow, or high wind is incoming.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "days": {"type": "integer", "description": "Days of forecast (1-7). Default 3."}
+                    }
+                }
             }
         ]
     }
@@ -382,6 +393,8 @@ async def execute_tool(request: Request, x_mcp_secret: str = Header(None)):
             result = await execute_meta(tool_name, params)
         elif tool_name in ("google_calendar_today", "gmail_urgent"):
             result = await execute_google(tool_name, params)
+        elif tool_name == "weather_red_deer_forecast":
+            result = await execute_weather(params)
         else:
             result = {"error": f"Unknown tool: {tool_name}"}
     except Exception as e:
@@ -1114,6 +1127,88 @@ async def execute_google(tool: str, params: dict) -> dict:
         return {"error": str(ex)}
 
     return {"error": f"Unhandled Google tool: {tool}"}
+
+
+# ─────────────────────────────────────────────
+# WEATHER (open-meteo, no key required)
+# ─────────────────────────────────────────────
+
+# Red Deer, Alberta approximate centroid
+RED_DEER_LAT = 52.2681
+RED_DEER_LON = -113.8112
+
+
+async def execute_weather(params: dict) -> dict:
+    days = max(1, min(int(params.get("days", 3)), 7))
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": RED_DEER_LAT,
+                    "longitude": RED_DEER_LON,
+                    "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,wind_speed_10m_max,weather_code",
+                    "timezone": "America/Edmonton",
+                    "forecast_days": days
+                }
+            )
+            resp.raise_for_status()
+            d = resp.json().get("daily", {})
+
+        dates = d.get("time", [])
+        forecast = []
+        risk_flags = []
+        # WMO weather codes — keep it simple
+        code_map = {
+            0: "clear", 1: "mostly clear", 2: "partly cloudy", 3: "overcast",
+            45: "fog", 48: "freezing fog",
+            51: "light drizzle", 53: "drizzle", 55: "heavy drizzle",
+            61: "light rain", 63: "rain", 65: "heavy rain",
+            71: "light snow", 73: "snow", 75: "heavy snow",
+            77: "snow grains",
+            80: "rain showers", 81: "heavy showers", 82: "violent showers",
+            85: "snow showers", 86: "heavy snow showers",
+            95: "thunderstorm", 96: "thunderstorm with hail", 99: "severe thunderstorm"
+        }
+
+        for i, date in enumerate(dates):
+            high = d.get("temperature_2m_max", [None] * len(dates))[i]
+            low = d.get("temperature_2m_min", [None] * len(dates))[i]
+            precip = d.get("precipitation_sum", [0] * len(dates))[i] or 0
+            precip_prob = d.get("precipitation_probability_max", [0] * len(dates))[i] or 0
+            wind = d.get("wind_speed_10m_max", [0] * len(dates))[i] or 0
+            code = d.get("weather_code", [0] * len(dates))[i]
+            condition = code_map.get(code, f"code {code}")
+
+            day_summary = {
+                "date": date,
+                "condition": condition,
+                "high_c": high,
+                "low_c": low,
+                "precip_mm": round(precip, 1),
+                "precip_chance_pct": precip_prob,
+                "wind_kmh_max": round(wind, 1)
+            }
+            forecast.append(day_summary)
+
+            # Outdoor-work risk flags
+            if precip >= 5 or precip_prob >= 60:
+                risk_flags.append(f"{date}: {condition}, {precip_prob}% precip — risk for deck/framing/concrete")
+            if wind >= 40:
+                risk_flags.append(f"{date}: wind {wind:.0f}km/h — risk for roof/lift work")
+            if low is not None and low < -10:
+                risk_flags.append(f"{date}: low {low}C — concrete cure issue, framing slow")
+            if code in (95, 96, 99):
+                risk_flags.append(f"{date}: thunderstorm — stop outdoor work")
+
+        return {
+            "location": "Red Deer, AB",
+            "forecast": forecast,
+            "outdoor_risk_flags": risk_flags,
+            "any_risk": len(risk_flags) > 0
+        }
+    except Exception as e:
+        return {"error": f"Weather fetch failed: {e}"}
 
 
 # ─────────────────────────────────────────────
