@@ -27,6 +27,8 @@ from memory.zep_memory import (
 
 app = FastAPI(title="Belmont Telegram Handler")
 
+from state import set_snooze, clear_snooze, is_snoozed, get_snooze_deadline
+
 @app.on_event("startup")
 async def startup():
     from scheduler import start_scheduler
@@ -344,6 +346,11 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             "/decision [what + why] — Log a major decision\n"
             "/lesson [rule] — Log a hard-earned lesson\n"
             "/who [name] — Recall everything I know about a contact\n"
+            "/expense [vendor amount category] — Log expense\n"
+            "/followup [name] — Quick client follow-up draft\n"
+            "\n<b>Control</b>\n"
+            "/snooze [hours] — DND window (default 2h)\n"
+            "/unsnooze — Cancel DND\n"
             "\n<b>Memory Recall</b>\n"
             "/promises — What I said I'd do (status check)\n"
             "/decisions — Major decisions logged + reasoning\n"
@@ -448,6 +455,66 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             f"family info, decisions made, communication style. Format as a compact contact card. "
             f"If nothing found, say so and ask Jacob if he wants to add notes about them."
         )
+
+    # /expense — quick expense log (writes to Zep now, QBO when OAuth restored)
+    elif text_lower.startswith("/expense"):
+        content = user_text[len("/expense"):].strip()
+        if not content:
+            await send_telegram(
+                chat_id,
+                "Format: /expense [vendor] [amount] [category] [memo]\n"
+                "Ex: /expense Windsor Plywood 487.20 materials Anderson deck framing"
+            )
+            return JSONResponse({"ok": True})
+        user_text = (
+            f"Jacob is logging an expense. Parse this input: \"{content}\"\n"
+            "Extract: vendor, amount (CAD), category (materials/fuel/tools/subs/other), "
+            "memo/job reference. Try qbo_create_expense first. If QBO returns 401 or "
+            "is not configured, store the expense details in Zep memory with category "
+            "'pending_qbo_sync' so it can be reconciled later. Confirm what was captured."
+        )
+
+    # /followup [name] — quick client follow-up draft in Jacob's voice
+    elif text_lower.startswith("/followup") or text_lower.startswith("/follow-up"):
+        prefix_len = len("/followup") if text_lower.startswith("/followup") else len("/follow-up")
+        name = user_text[prefix_len:].strip()
+        if not name:
+            await send_telegram(chat_id, "Format: /followup [client name]\nEx: /followup Henderson")
+            return JSONResponse({"ok": True})
+        user_text = (
+            f"Draft a follow-up message to {name} in Jacob's voice. Steps:\n"
+            f"1. Search Zep memory for context on {name} — what we've talked about, "
+            f"any open estimate or job\n"
+            f"2. Try jobtread_get_contacts to find their record\n"
+            f"3. Try jobtread_get_estimates to see if there's an open quote tied to them\n"
+            f"4. Draft a short, direct message that references actual context — not generic "
+            f"'just checking in' fluff\n"
+            f"5. Under 80 words. Clear next step. Ready to copy-paste.\n"
+            f"If you can't find anything, ask Jacob what context to use."
+        )
+
+    # /snooze [hours] — set DND window
+    elif text_lower.startswith("/snooze"):
+        import re
+        m = re.search(r'(\d+)\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes)?', user_text[len("/snooze"):])
+        if not m:
+            hours = 2  # default
+        else:
+            n = int(m.group(1))
+            unit = (m.group(2) or "h").lower()
+            hours = n / 60.0 if unit.startswith("m") and not unit.startswith("h") else n
+        until = set_snooze(str(chat_id), hours)
+        await send_telegram(
+            chat_id,
+            f"Snoozed until {until.strftime('%I:%M %p')}. Scheduled jobs paused. "
+            f"Send /unsnooze to resume early."
+        )
+        return JSONResponse({"ok": True})
+
+    elif text_lower == "/unsnooze":
+        clear_snooze(str(chat_id))
+        await send_telegram(chat_id, "Snooze cleared. Back to normal.")
+        return JSONResponse({"ok": True})
 
     elif text_lower in QUICK_COMMANDS:
         user_text = QUICK_COMMANDS[text_lower]

@@ -9,6 +9,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import httpx
 
+from state import is_snoozed
+
 JACOB_CHAT_ID = os.getenv("JACOB_CHAT_ID", "")
 SELF_URL = os.getenv("SELF_URL", "http://localhost:8000")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
@@ -19,6 +21,10 @@ MCP_SERVER_SECRET = os.getenv("MCP_SERVER_SECRET", "")
 
 async def send_telegram(text: str):
     if not TELEGRAM_TOKEN or not JACOB_CHAT_ID:
+        return
+    # Honor snooze window — scheduled jobs go quiet during DND
+    if is_snoozed(JACOB_CHAT_ID):
+        print(f"[scheduler] Snoozed — skipping scheduled message")
         return
     chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
     async with httpx.AsyncClient(timeout=15) as client:
@@ -49,6 +55,10 @@ async def trigger_agent_task(message: str):
     """Trigger a task on the Telegram handler as if Jacob sent it."""
     if not JACOB_CHAT_ID:
         return
+    # Honor snooze window for agent-triggered scheduled tasks too
+    if is_snoozed(JACOB_CHAT_ID):
+        print(f"[scheduler] Snoozed — skipping agent-trigger")
+        return
     async with httpx.AsyncClient(timeout=120) as client:
         payload = {
             "message": {
@@ -66,6 +76,9 @@ async def trigger_agent_task(message: str):
 
 async def morning_brief():
     """Daily 7:00 AM Mountain — full briefing via MCP /briefing endpoint + weather + commitments."""
+    if is_snoozed(JACOB_CHAT_ID):
+        print(f"[scheduler] Morning brief skipped — Jacob is snoozed")
+        return
     try:
         async with httpx.AsyncClient(timeout=90) as client:
             resp = await client.post(
