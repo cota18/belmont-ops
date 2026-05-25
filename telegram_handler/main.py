@@ -768,19 +768,19 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     # /week — week ahead snapshot
     elif text_lower == "/week":
         user_text = (
-            "Generate Jacob's week-ahead snapshot. Pull:\n"
-            "- weather_red_deer_forecast (7 days, flag any outdoor risk)\n"
-            "- Open estimates with age — anything >14 days?\n"
-            "- Active jobs with budget/schedule risk\n"
-            "- Calendar events for the week (if available)\n\n"
-            "Output:\n"
-            "WEEK OF [date]\n"
-            "Pipeline: $X across N estimates ([X over 14 days])\n"
-            "Active jobs: N — flag any at risk\n"
+            "Generate Jacob's week-ahead snapshot. Pull ALL of these tools:\n"
+            "1. google_calendar_week (week_offset=0) — show Mon-Sun schedule\n"
+            "2. weather_red_deer_forecast (days=7) — flag outdoor risk days\n"
+            "3. jobtread_get_estimates — open estimates, any >14 days old?\n"
+            "4. jobtread_list_jobs (active) — budget/schedule risk\n\n"
+            "Output format:\n"
+            "WEEK OF [date range]\n"
+            "Schedule: [list key meetings/site visits by day]\n"
+            "Pipeline: $X across N estimates (flag anything >14 days)\n"
+            "Active jobs: N jobs — flag any at risk\n"
             "Weather watch: [days with outdoor risk]\n"
-            "Schedule highlights: [key meetings/events]\n"
-            "Single thing that would make this week a win: [your call]\n\n"
-            "Under 250 words. Push back if Jacob's avoiding something."
+            "This week's win: [single most important thing]\n\n"
+            "Under 280 words. Push back if Jacob's avoiding something obvious."
         )
 
     # /idea — quick idea capture
