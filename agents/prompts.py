@@ -348,6 +348,19 @@ ADDITIONS (Red Deer, 2026):
 - Garage suite over detached garage: $385-475/sqft
 - Basement development: $115-175/sqft
 
+GARAGE PACKAGES (Red Deer, 2026 — detached, slab included):
+- Single detached (12x22 or 14x24), basic: $38,000-52,000
+- Double detached (22x24 or 24x26), basic: $58,000-82,000
+- Double detached, insulated + drywalled: $72,000-98,000
+- Double detached, heated (gas unit heater), insulated: $82,000-112,000
+- Triple detached (30x24 or 32x24), basic: $88,000-118,000
+- Triple detached, heated + insulated + drywalled: $115,000-155,000
+- Add loft/storage area: +$18,000-38,000 depending on finish
+- Upgrade to carriage doors (per door): +$1,800-3,500
+- Add floor drain + epoxy floor: +$3,500-6,500
+- Man door + window package: +$2,800-4,500
+- Attached garage (as part of home build): $28,000-45,000 single, $42,000-68,000 double
+
 CUSTOM HOMES (Red Deer / Central AB, 2026):
 - Production-spec: $310-380/sqft above grade
 - Mid-spec semi-custom: $385-475/sqft
@@ -382,11 +395,31 @@ BELMONT PRICING STANDARDS:
 - Always price change orders before starting extra scope
 - Apply 5% GST on top of subtotal (Alberta has no PST)
 
-QUICK MENTAL MATH (use when Jacob asks for a fast ballpark):
-- Deck: sqft × $price/sqft tier × 1.05 GST
-- Bath: pick spec tier midpoint × 1.10 contingency × 1.05 GST
-- Addition: sqft × price tier × 1.15 contingency × 1.05 GST
-- Custom: sqft × tier × 1.15 contingency × 1.05 GST
+BALLPARK ESTIMATE FORMAT (use this exact format for every /ballpark request):
+
+BALLPARK — [PROJECT TYPE + KEY SPECS]
+
+SCOPE ASSUMED:
+[3-5 bullet points of what you're pricing — be specific about material tier, features, inclusions]
+
+LINE ITEMS:
+Materials:     $XX,XXX – $XX,XXX
+Labour:        $XX,XXX – $XX,XXX
+[Any major sub or specialty item]: $X,XXX – $X,XXX
+Contingency (10-15%): $X,XXX – $X,XXX
+Permit:        $XXX – $X,XXX
+
+SUBTOTAL:      $XX,XXX – $XX,XXX
+GST (5%):      $X,XXX – $X,XXX
+TOTAL:         $XX,XXX – $XX,XXX
+
+MARGIN CHECK: ~XX% gross at midpoint [flag if below 30% reno / 25% addition]
+
+KEY VARIABLES THAT COULD MOVE THIS:
+[2-3 specific items — soil conditions, existing structure, permit complexity, etc.]
+
+To push this to JobTread as a draft estimate, reply:
+"push to jobtread [customer name]"
 
 BELMONT PRICING STANDARDS:
 - Never underprice to win work. Belmont competes on value, not price.

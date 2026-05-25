@@ -566,7 +566,9 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             "/research [topic] — Deep web research with sources\n"
             "/lookup [topic] — Quick fact lookup\n"
             "/email [to/subject/body] — Send email from Gmail\n"
-            "/quote [project] — Fast ballpark estimate\n"
+            "/ballpark [type + details] — Structured estimate with line items\n"
+            "  → deck, garage, kitchen, bathroom, home, basement\n"
+            "  → reply 'push to jobtread [name]' to create draft\n"
             "\n<b>Recall</b>\n"
             "/promises /decisions /lessons /wins /network\n"
             "/who [name] — Contact card\n"
@@ -586,20 +588,55 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         await send_telegram(chat_id, help_text)
         return JSONResponse({"ok": True})
 
-    # /quote with text after it -> ballpark estimate
-    if text_lower.startswith("/quote"):
-        quote_input = user_text[len("/quote"):].strip()
-        if not quote_input:
+    # /ballpark or /quote -> structured estimate with JobTread push option
+    if text_lower.startswith("/ballpark") or text_lower.startswith("/quote"):
+        prefix = "/ballpark" if text_lower.startswith("/ballpark") else "/quote"
+        project_input = user_text[len(prefix):].strip()
+        if not project_input:
             await send_telegram(
                 chat_id,
-                "Format: /quote [project description]\n\n"
+                "<b>Ballpark Estimator</b>\n\n"
+                "Format: /ballpark [type] [details]\n\n"
                 "Examples:\n"
-                "/quote 600sqft composite deck with glass railing in Red Deer\n"
-                "/quote 80sqft master bath reno mid-spec curbless shower\n"
-                "/quote 400sqft single-storey addition standard finish"
+                "/ballpark deck 16x20 composite with stairs and glass railing\n"
+                "/ballpark garage 24x24 detached heated and insulated\n"
+                "/ballpark kitchen 180sqft high-end custom cabs Wolf appliances\n"
+                "/ballpark bathroom primary ensuite 130sqft curbless heated floor\n"
+                "/ballpark home 2400sqft bungalow high-spec\n"
+                "/ballpark basement 1100sqft development 2bed 1bath\n\n"
+                "After the ballpark, reply \"push to jobtread [customer name]\" to create a draft estimate."
             )
             return JSONResponse({"ok": True})
-        user_text = ESTIMATE_TEMPLATE_PROMPT + quote_input
+        user_text = (
+            f"Generate a ballpark estimate for this Belmont project using the BALLPARK ESTIMATE FORMAT exactly.\n\n"
+            f"Project: {project_input}\n\n"
+            f"Use Belmont's 2026 Alberta pricing knowledge. Break out materials vs labour. "
+            f"Apply correct contingency (10% reno, 15% addition/garage/custom). Add 5% GST. "
+            f"Check margin at midpoint — flag if below standard. "
+            f"State 2-3 assumptions that most affect the range. "
+            f"End with the JobTread push offer."
+        )
+
+    # "push to jobtread [name]" after a ballpark — create draft estimate
+    elif text_lower.startswith("push to jobtread") or text_lower.startswith("yes push") or (
+        text_lower.startswith("yes ") and "jobtread" in text_lower
+    ):
+        customer_name = user_text.split(" ")[-1] if len(user_text.split()) > 1 else "New Client"
+        # Strip command words to get just the name
+        for prefix_word in ["push to jobtread", "yes push to jobtread", "yes jobtread", "push jobtread"]:
+            if text_lower.startswith(prefix_word):
+                customer_name = user_text[len(prefix_word):].strip() or customer_name
+                break
+        user_text = (
+            f"Jacob wants to push the ballpark estimate from our conversation to JobTread as a draft estimate.\n"
+            f"Customer name: {customer_name}\n\n"
+            f"Steps:\n"
+            f"1. Use jobtread_create_job to create a new job for {customer_name} (use the project type as the job name)\n"
+            f"2. The estimate already exists in our conversation — summarize the key line items\n"
+            f"3. Confirm the job was created and give Jacob the JobTread job number\n"
+            f"4. Tell him what to do next: add contact details, attach drawings if any, convert to formal estimate\n\n"
+            f"Keep it fast. Job name should be descriptive: '[Customer] — [Project Type]'"
+        )
 
     # /gst — quick GST calculator (5% in Alberta)
     elif text_lower.startswith("/gst"):
