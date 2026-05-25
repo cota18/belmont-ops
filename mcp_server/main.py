@@ -41,6 +41,191 @@ async def health():
     return {"status": "Belmont MCP Server online", "tools": 28}
 
 
+@app.get("/diagnostic")
+async def diagnostic():
+    """
+    Full integration health report. Probes every external service.
+    Returns red/green per integration with actionable next steps.
+    Hit this URL anytime to see exactly what's working and what's not.
+    """
+    report = {
+        "timestamp": "",
+        "integrations": {},
+        "summary": {"green": 0, "yellow": 0, "red": 0}
+    }
+    from datetime import datetime
+    report["timestamp"] = datetime.utcnow().isoformat() + "Z"
+
+    def mark(name: str, status: str, detail: str, fix: str = ""):
+        report["integrations"][name] = {"status": status, "detail": detail, "fix": fix}
+        if status == "green":
+            report["summary"]["green"] += 1
+        elif status == "yellow":
+            report["summary"]["yellow"] += 1
+        else:
+            report["summary"]["red"] += 1
+
+    # ── ANTHROPIC ─────────────────────────────────────────────────────────
+    ant_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not ant_key:
+        mark("anthropic", "red", "ANTHROPIC_API_KEY not set", "Set env var on Railway")
+    elif len(ant_key) < 20:
+        mark("anthropic", "red", "ANTHROPIC_API_KEY looks malformed", "Generate a fresh key at console.anthropic.com")
+    else:
+        mark("anthropic", "green", f"Key present ({ant_key[:8]}...{ant_key[-4:]})")
+
+    # ── JOBTREAD ─────────────────────────────────────────────────────────
+    if not JOBTREAD_KEY:
+        mark("jobtread", "red", "JOBTREAD_API_KEY not set", "Add grant key from JobTread account settings")
+    else:
+        try:
+            test = await jobtread_query({"currentGrant": {"user": {"id": {}, "name": {}}}})
+            if "error" in test or not test.get("currentGrant"):
+                mark("jobtread", "red", f"API call failed: {test.get('error', 'no data')}", "Re-check grant key in JobTread")
+            else:
+                user = test.get("currentGrant", {}).get("user", {})
+                mark("jobtread", "green", f"Connected as {user.get('name', 'unknown')}")
+        except Exception as e:
+            mark("jobtread", "red", f"Exception: {e}", "Re-check grant key in JobTread")
+
+    # ── QBO ───────────────────────────────────────────────────────────────
+    qbo_token = os.getenv("QBO_ACCESS_TOKEN", "")
+    qbo_refresh = os.getenv("QBO_REFRESH_TOKEN", "")
+    qbo_realm = os.getenv("QBO_REALM_ID", "")
+    qbo_cid = os.getenv("QBO_CLIENT_ID", "")
+    qbo_cs = os.getenv("QBO_CLIENT_SECRET", "")
+
+    if not (qbo_cid and qbo_cs):
+        mark("qbo", "red", "QBO_CLIENT_ID or QBO_CLIENT_SECRET missing",
+             "Get from developer.intuit.com app credentials")
+    elif not (qbo_token and qbo_refresh and qbo_realm):
+        mark("qbo", "red", "QBO tokens not set — needs OAuth flow",
+             "Run OAuth Playground: developer.intuit.com/app/developer/playground")
+    elif qbo_token in ("PENDING", "SANDBOX_PENDING"):
+        mark("qbo", "red", "QBO_ACCESS_TOKEN is placeholder",
+             "Run OAuth Playground to get real tokens")
+    else:
+        try:
+            test = await qbo_request("GET", "companyinfo/" + qbo_realm)
+            ci = test.get("CompanyInfo", {})
+            mark("qbo", "green", f"Connected to {ci.get('CompanyName', 'company')} (realm {qbo_realm[:8]}...)")
+        except Exception as e:
+            err = str(e)[:120]
+            mark("qbo", "yellow", f"Token issue: {err}", "Run qbo_refresh_token tool or redo OAuth")
+
+    # ── META ADS ──────────────────────────────────────────────────────────
+    if not META_TOKEN:
+        mark("meta_ads", "red", "META_ACCESS_TOKEN not set", "Get from developers.facebook.com/tools/explorer")
+    elif not META_AD_ACCOUNT:
+        mark("meta_ads", "yellow", "Token set but META_AD_ACCOUNT_ID missing",
+             "Get ad account ID from business.facebook.com")
+    else:
+        try:
+            test = await meta_request(
+                f"act_{META_AD_ACCOUNT}",
+                params={"fields": "name,account_status,currency"}
+            )
+            mark("meta_ads", "green", f"Connected to {test.get('name', 'account')}, {test.get('currency', '?')}")
+        except Exception as e:
+            mark("meta_ads", "red", f"API call failed: {str(e)[:120]}",
+                 "Token may be expired — regenerate at Graph Explorer")
+
+    # ── META PAGE ─────────────────────────────────────────────────────────
+    if not META_PAGE_TOKEN:
+        mark("meta_page", "red", "META_PAGE_TOKEN not set",
+             "Graph Explorer: generate token with pages_read_engagement + pages_manage_posts + pages_read_user_content")
+    elif not META_PAGE_ID:
+        mark("meta_page", "yellow", "Page token set but META_PAGE_ID missing", "Get from page settings")
+    else:
+        try:
+            test = await meta_request(f"{META_PAGE_ID}", params={"fields": "name,fan_count"}, use_page_token=True)
+            mark("meta_page", "green", f"Connected to page '{test.get('name', '?')}'")
+        except Exception as e:
+            mark("meta_page", "red", f"Page API failed: {str(e)[:120]}",
+                 "Re-generate page token with full permissions")
+
+    # ── GOOGLE ────────────────────────────────────────────────────────────
+    g_cid = os.getenv("GOOGLE_CLIENT_ID", "")
+    g_cs = os.getenv("GOOGLE_CLIENT_SECRET", "")
+    g_cal_t = os.getenv("GOOGLE_CALENDAR_TOKEN", "")
+    g_gmail_t = os.getenv("GMAIL_TOKEN", "")
+
+    if not (g_cid and g_cs):
+        mark("google", "red", "GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set",
+             "Create OAuth credentials at console.cloud.google.com")
+    elif not (g_cal_t and g_gmail_t) or g_cal_t in ("PENDING", "") or g_gmail_t in ("PENDING", ""):
+        mark("google", "red", "Google OAuth tokens not set — needs flow",
+             "Run Google OAuth flow with calendar.readonly + gmail.readonly scopes")
+    else:
+        mark("google", "green", "OAuth tokens present (full validation requires live API call)")
+
+    # ── ZEP MEMORY ────────────────────────────────────────────────────────
+    zep_key = os.getenv("ZEP_API_KEY", "")
+    if not zep_key:
+        mark("zep_memory", "red", "ZEP_API_KEY not set — agent has no memory",
+             "Sign up at app.getzep.com (free), create project, copy API key")
+    elif zep_key in ("PENDING", ""):
+        mark("zep_memory", "red", "ZEP_API_KEY is placeholder",
+             "Set real key from app.getzep.com")
+    else:
+        try:
+            # Try Zep client init — non-destructive
+            from zep_cloud.client import AsyncZep
+            zep = AsyncZep(api_key=zep_key)
+            test_user = await zep.user.get("jacob_cota")
+            mark("zep_memory", "green", f"Connected — user '{test_user.user_id}' exists")
+        except Exception as e:
+            err = str(e)[:150]
+            if "401" in err or "unauthorized" in err.lower() or "auth" in err.lower():
+                mark("zep_memory", "red", f"Auth failed: {err}",
+                     "Key is invalid/expired — generate new key at app.getzep.com")
+            elif "not found" in err.lower() or "404" in err:
+                mark("zep_memory", "yellow", "Key valid but user not created yet",
+                     "Will auto-create on first agent message")
+            else:
+                mark("zep_memory", "yellow", f"Unexpected: {err}", "Check Zep dashboard")
+
+    # ── OPENAI (voice transcription) ──────────────────────────────────────
+    oai_key = os.getenv("OPENAI_API_KEY", "")
+    if not oai_key:
+        mark("openai_voice", "yellow", "OPENAI_API_KEY not set — voice memos disabled",
+             "Optional. Set to enable Whisper transcription for voice messages.")
+    else:
+        mark("openai_voice", "green", f"Key present — voice memos enabled ({oai_key[:8]}...)")
+
+    # ── TELEGRAM ──────────────────────────────────────────────────────────
+    tg_token = os.getenv("TELEGRAM_TOKEN", "")
+    tg_chat = os.getenv("JACOB_CHAT_ID", "")
+    if not tg_token:
+        mark("telegram", "red", "TELEGRAM_TOKEN not set on MCP server",
+             "Only needed for /briefing push — agent itself works without")
+    elif not tg_chat:
+        mark("telegram", "yellow", "JACOB_CHAT_ID not set on MCP server",
+             "Briefing endpoint cannot deliver")
+    else:
+        mark("telegram", "green", f"Token + chat ID present (chat {tg_chat})")
+
+    # ── WEATHER (no auth required) ────────────────────────────────────────
+    try:
+        w = await execute_weather({"days": 1})
+        if w.get("forecast"):
+            mark("weather", "green", "open-meteo responding")
+        else:
+            mark("weather", "yellow", "Unexpected response", "")
+    except Exception as e:
+        mark("weather", "red", f"Failed: {e}", "Check Railway outbound network")
+
+    # Total tool count + final summary
+    report["total_tools_registered"] = 28
+    s = report["summary"]
+    report["overall"] = (
+        "ALL GREEN" if s["red"] == 0 and s["yellow"] == 0
+        else f"{s['red']} broken, {s['yellow']} partial, {s['green']} working"
+    )
+
+    return report
+
+
 @app.get("/mcp/tools")
 async def list_tools():
     """Returns the full tool manifest for Claude Managed Agents."""

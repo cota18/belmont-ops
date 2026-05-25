@@ -361,7 +361,8 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             "/subs — Subcontractor list\n"
             "/bjj — Log BJJ session\n"
             "\n<b>System</b>\n"
-            "/status — System health\n"
+            "/status — System health (lightweight)\n"
+            "/diagnostic — Full integration health report\n"
             "/help — This menu\n\n"
             "Or ask me anything in plain English.\n"
             "Send a photo with 'receipt' in the caption to log an expense.\n"
@@ -515,6 +516,35 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     elif text_lower == "/unsnooze":
         clear_snooze(str(chat_id))
         await send_telegram(chat_id, "Snooze cleared. Back to normal.")
+        return JSONResponse({"ok": True})
+
+    # /diagnostic — full integration health report
+    elif text_lower in ("/diagnostic", "/diag", "/health"):
+        await send_typing(chat_id)
+        mcp_url = os.getenv("MCP_SERVER_URL", "")
+        if not mcp_url:
+            await send_telegram(chat_id, "MCP_SERVER_URL not set on Telegram handler.")
+            return JSONResponse({"ok": True})
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(f"{mcp_url}/diagnostic")
+                report = resp.json()
+        except Exception as e:
+            await send_telegram(chat_id, f"Diagnostic call failed: {e}")
+            return JSONResponse({"ok": True})
+
+        s = report.get("summary", {})
+        lines = [
+            "<b>Belmont Agent — Integration Health</b>",
+            f"<i>{report.get('overall', 'unknown')}</i>",
+            f"✅ {s.get('green', 0)} green  ⚠️ {s.get('yellow', 0)} yellow  ❌ {s.get('red', 0)} red\n"
+        ]
+        icon = {"green": "✅", "yellow": "⚠️", "red": "❌"}
+        for name, info in report.get("integrations", {}).items():
+            lines.append(f"{icon.get(info['status'], '?')} <b>{name}</b>: {info['detail']}")
+            if info.get("fix"):
+                lines.append(f"   ↳ {info['fix']}")
+        await send_telegram(chat_id, "\n".join(lines))
         return JSONResponse({"ok": True})
 
     elif text_lower in QUICK_COMMANDS:
