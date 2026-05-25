@@ -16,6 +16,56 @@ load_dotenv()
 
 app = FastAPI(title="Belmont MCP Server")
 
+
+@app.on_event("startup")
+async def validate_env_on_startup():
+    """Log presence/absence of required env vars on boot for quick Railway log inspection."""
+    required = {
+        "JOBTREAD_API_KEY": "JobTread tools (9 tools)",
+        "META_ACCESS_TOKEN": "Meta ads tools (5 tools)",
+        "META_AD_ACCOUNT_ID": "Meta ads queries",
+        "MCP_SERVER_SECRET": "MCP authentication",
+    }
+    optional = {
+        "QBO_ACCESS_TOKEN": "QBO tools (8 tools) — needs OAuth",
+        "QBO_REFRESH_TOKEN": "QBO auto-refresh",
+        "QBO_REALM_ID": "QBO company ID",
+        "QBO_CLIENT_ID": "QBO app",
+        "QBO_CLIENT_SECRET": "QBO app",
+        "META_PAGE_TOKEN": "Meta page tools (3 tools)",
+        "META_PAGE_ID": "Meta page tools",
+        "GOOGLE_CLIENT_ID": "Google Calendar + Gmail",
+        "GOOGLE_CLIENT_SECRET": "Google Calendar + Gmail",
+        "GOOGLE_CALENDAR_TOKEN": "Google Calendar",
+        "GMAIL_TOKEN": "Gmail",
+        "TELEGRAM_TOKEN": "Briefing push",
+        "JACOB_CHAT_ID": "Briefing push",
+    }
+    print("=" * 60)
+    print("BELMONT MCP SERVER — STARTUP VALIDATION")
+    print("=" * 60)
+    missing_required = []
+    for var, purpose in required.items():
+        present = bool(os.getenv(var, "").strip())
+        status = "OK " if present else "XX "
+        print(f"{status} {var}: {purpose}")
+        if not present:
+            missing_required.append(var)
+    print("-" * 60)
+    print("Optional integrations:")
+    for var, purpose in optional.items():
+        v = os.getenv(var, "").strip()
+        if v and v not in ("PENDING", "SANDBOX_PENDING"):
+            print(f"OK  {var}: {purpose}")
+        else:
+            print(f"-- {var}: {purpose} (not configured)")
+    print("=" * 60)
+    if missing_required:
+        print(f"WARNING: {len(missing_required)} REQUIRED env var(s) missing — tools will fail")
+    else:
+        print("All REQUIRED env vars set — core tools operational")
+    print("=" * 60)
+
 JOBTREAD_KEY = os.getenv("JOBTREAD_API_KEY")
 QBO_TOKEN = os.getenv("QBO_ACCESS_TOKEN")
 QBO_REALM = os.getenv("QBO_REALM_ID")
@@ -64,15 +114,6 @@ async def diagnostic():
             report["summary"]["yellow"] += 1
         else:
             report["summary"]["red"] += 1
-
-    # ── ANTHROPIC ─────────────────────────────────────────────────────────
-    ant_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not ant_key:
-        mark("anthropic", "red", "ANTHROPIC_API_KEY not set", "Set env var on Railway")
-    elif len(ant_key) < 20:
-        mark("anthropic", "red", "ANTHROPIC_API_KEY looks malformed", "Generate a fresh key at console.anthropic.com")
-    else:
-        mark("anthropic", "green", f"Key present ({ant_key[:8]}...{ant_key[-4:]})")
 
     # ── JOBTREAD ─────────────────────────────────────────────────────────
     if not JOBTREAD_KEY:
@@ -159,40 +200,6 @@ async def diagnostic():
     else:
         mark("google", "green", "OAuth tokens present (full validation requires live API call)")
 
-    # ── ZEP MEMORY ────────────────────────────────────────────────────────
-    zep_key = os.getenv("ZEP_API_KEY", "")
-    if not zep_key:
-        mark("zep_memory", "red", "ZEP_API_KEY not set — agent has no memory",
-             "Sign up at app.getzep.com (free), create project, copy API key")
-    elif zep_key in ("PENDING", ""):
-        mark("zep_memory", "red", "ZEP_API_KEY is placeholder",
-             "Set real key from app.getzep.com")
-    else:
-        try:
-            # Try Zep client init — non-destructive
-            from zep_cloud.client import AsyncZep
-            zep = AsyncZep(api_key=zep_key)
-            test_user = await zep.user.get("jacob_cota")
-            mark("zep_memory", "green", f"Connected — user '{test_user.user_id}' exists")
-        except Exception as e:
-            err = str(e)[:150]
-            if "401" in err or "unauthorized" in err.lower() or "auth" in err.lower():
-                mark("zep_memory", "red", f"Auth failed: {err}",
-                     "Key is invalid/expired — generate new key at app.getzep.com")
-            elif "not found" in err.lower() or "404" in err:
-                mark("zep_memory", "yellow", "Key valid but user not created yet",
-                     "Will auto-create on first agent message")
-            else:
-                mark("zep_memory", "yellow", f"Unexpected: {err}", "Check Zep dashboard")
-
-    # ── OPENAI (voice transcription) ──────────────────────────────────────
-    oai_key = os.getenv("OPENAI_API_KEY", "")
-    if not oai_key:
-        mark("openai_voice", "yellow", "OPENAI_API_KEY not set — voice memos disabled",
-             "Optional. Set to enable Whisper transcription for voice messages.")
-    else:
-        mark("openai_voice", "green", f"Key present — voice memos enabled ({oai_key[:8]}...)")
-
     # ── TELEGRAM ──────────────────────────────────────────────────────────
     tg_token = os.getenv("TELEGRAM_TOKEN", "")
     tg_chat = os.getenv("JACOB_CHAT_ID", "")
@@ -217,6 +224,7 @@ async def diagnostic():
 
     # Total tool count + final summary
     report["total_tools_registered"] = 28
+    report["service"] = "mcp_server"
     s = report["summary"]
     report["overall"] = (
         "ALL GREEN" if s["red"] == 0 and s["yellow"] == 0

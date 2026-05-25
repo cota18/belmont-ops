@@ -31,8 +31,182 @@ from state import set_snooze, clear_snooze, is_snoozed, get_snooze_deadline
 
 @app.on_event("startup")
 async def startup():
+    # Startup env var validation — visible in Railway logs
+    print("=" * 60)
+    print("BELMONT TELEGRAM HANDLER — STARTUP VALIDATION")
+    print("=" * 60)
+    required = {
+        "ANTHROPIC_API_KEY": "Agent LLM (Claude)",
+        "TELEGRAM_TOKEN": "Bot connection",
+        "JACOB_CHAT_ID": "Security filter (only Jacob)",
+        "MCP_SERVER_URL": "Tool routing",
+        "MCP_SERVER_SECRET": "Tool authentication",
+    }
+    optional = {
+        "ZEP_API_KEY": "Long-term memory (free tier covers usage)",
+        "OPENAI_API_KEY": "Voice memo transcription (Whisper)",
+        "SELF_URL": "Self-trigger for scheduled tasks",
+    }
+    missing_required = []
+    for var, purpose in required.items():
+        present = bool(os.getenv(var, "").strip())
+        print(f"{'OK ' if present else 'XX '} {var}: {purpose}")
+        if not present:
+            missing_required.append(var)
+    print("-" * 60)
+    print("Optional integrations:")
+    for var, purpose in optional.items():
+        v = os.getenv(var, "").strip()
+        if v and v not in ("PENDING",):
+            print(f"OK  {var}: {purpose}")
+        else:
+            print(f"-- {var}: {purpose} (not configured)")
+    print("=" * 60)
+    if missing_required:
+        print(f"WARNING: {len(missing_required)} REQUIRED env var(s) missing")
+    print("=" * 60)
+
     from scheduler import start_scheduler
     start_scheduler()
+
+
+@app.get("/diagnostic")
+async def diagnostic():
+    """Health check for Telegram-handler-side integrations (Anthropic, Zep, OpenAI)."""
+    from datetime import datetime
+    report = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "service": "telegram_handler",
+        "integrations": {},
+        "summary": {"green": 0, "yellow": 0, "red": 0}
+    }
+
+    def mark(name: str, status: str, detail: str, fix: str = ""):
+        report["integrations"][name] = {"status": status, "detail": detail, "fix": fix}
+        report["summary"][status] = report["summary"].get(status, 0) + 1
+
+    # ── ANTHROPIC ─────────────────────────────────────────────────────────
+    ant = os.getenv("ANTHROPIC_API_KEY", "")
+    if not ant:
+        mark("anthropic", "red", "ANTHROPIC_API_KEY not set — agent cannot respond",
+             "Get key at console.anthropic.com, set on Railway")
+    elif len(ant) < 20:
+        mark("anthropic", "red", "ANTHROPIC_API_KEY looks malformed",
+             "Regenerate at console.anthropic.com")
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": ant,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json"
+                    },
+                    json={
+                        "model": "claude-sonnet-4-5",
+                        "max_tokens": 5,
+                        "messages": [{"role": "user", "content": "hi"}]
+                    }
+                )
+            if r.status_code == 200:
+                mark("anthropic", "green", f"Key valid ({ant[:8]}...{ant[-4:]})")
+            else:
+                mark("anthropic", "red", f"API returned {r.status_code}",
+                     "Check key validity at console.anthropic.com")
+        except Exception as e:
+            mark("anthropic", "yellow", f"Cannot verify: {str(e)[:100]}", "")
+
+    # ── ZEP MEMORY ────────────────────────────────────────────────────────
+    zep_key = os.getenv("ZEP_API_KEY", "")
+    if not zep_key:
+        mark("zep_memory", "red", "ZEP_API_KEY not set — no long-term memory",
+             "Sign up FREE at app.getzep.com, create project, copy API key")
+    elif zep_key in ("PENDING",):
+        mark("zep_memory", "red", "ZEP_API_KEY is placeholder",
+             "Replace with real key from app.getzep.com")
+    else:
+        try:
+            from zep_cloud.client import AsyncZep
+            zep = AsyncZep(api_key=zep_key)
+            try:
+                user = await zep.user.get("jacob_cota")
+                mark("zep_memory", "green", f"Connected — user '{user.user_id}' exists")
+            except Exception as user_err:
+                err = str(user_err)[:150].lower()
+                if "401" in err or "unauthorized" in err or "invalid api key" in err:
+                    mark("zep_memory", "red", "401 Unauthorized — key invalid/expired",
+                         "Generate new key at app.getzep.com Settings > API Keys")
+                elif "not found" in err or "404" in err:
+                    mark("zep_memory", "yellow", "Key valid, user doesn't exist yet",
+                         "Send any Telegram message — user auto-creates")
+                else:
+                    mark("zep_memory", "yellow", f"Unexpected: {str(user_err)[:120]}", "")
+        except Exception as e:
+            mark("zep_memory", "red", f"Client init failed: {str(e)[:120]}", "")
+
+    # ── OPENAI (voice transcription) ──────────────────────────────────────
+    oai = os.getenv("OPENAI_API_KEY", "")
+    if not oai:
+        mark("openai_voice", "yellow", "OPENAI_API_KEY not set — voice memos disabled",
+             "Optional. Get key at platform.openai.com/api-keys to enable Whisper")
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    "https://api.openai.com/v1/models",
+                    headers={"Authorization": f"Bearer {oai}"}
+                )
+            if r.status_code == 200:
+                mark("openai_voice", "green", "Voice memos enabled — Whisper ready")
+            else:
+                mark("openai_voice", "red", f"OpenAI returned {r.status_code}",
+                     "Check key at platform.openai.com")
+        except Exception as e:
+            mark("openai_voice", "yellow", f"Cannot verify: {str(e)[:100]}", "")
+
+    # ── TELEGRAM ──────────────────────────────────────────────────────────
+    tg = os.getenv("TELEGRAM_TOKEN", "")
+    chat = os.getenv("JACOB_CHAT_ID", "")
+    if not tg:
+        mark("telegram", "red", "TELEGRAM_TOKEN not set", "Set in Railway from BotFather")
+    elif not chat:
+        mark("telegram", "red", "JACOB_CHAT_ID not set", "Set Jacob's Telegram user ID")
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(f"https://api.telegram.org/bot{tg}/getMe")
+            if r.status_code == 200:
+                bot = r.json().get("result", {})
+                mark("telegram", "green", f"Bot @{bot.get('username', '?')} connected, chat {chat}")
+            else:
+                mark("telegram", "red", f"Bot API returned {r.status_code}", "")
+        except Exception as e:
+            mark("telegram", "yellow", f"Cannot verify: {str(e)[:100]}", "")
+
+    # ── MCP SERVER REACHABLE ─────────────────────────────────────────────
+    mcp_url = os.getenv("MCP_SERVER_URL", "")
+    if not mcp_url:
+        mark("mcp_server", "red", "MCP_SERVER_URL not set — no tools available",
+             "Set to the MCP server Railway URL")
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(mcp_url.rstrip("/"))
+            if r.status_code == 200:
+                tools = r.json().get("tools", "?")
+                mark("mcp_server", "green", f"MCP reachable, {tools} tools registered")
+            else:
+                mark("mcp_server", "red", f"MCP returned {r.status_code}", "")
+        except Exception as e:
+            mark("mcp_server", "red", f"Cannot reach MCP: {str(e)[:100]}", "")
+
+    s = report["summary"]
+    report["overall"] = (
+        "ALL GREEN" if s.get("red", 0) == 0 and s.get("yellow", 0) == 0
+        else f"{s.get('red', 0)} broken, {s.get('yellow', 0)} partial, {s.get('green', 0)} working"
+    )
+    return report
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
@@ -518,33 +692,108 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         await send_telegram(chat_id, "Snooze cleared. Back to normal.")
         return JSONResponse({"ok": True})
 
-    # /diagnostic — full integration health report
+    # /diagnostic — full integration health report (both services)
     elif text_lower in ("/diagnostic", "/diag", "/health"):
         await send_typing(chat_id)
         mcp_url = os.getenv("MCP_SERVER_URL", "")
-        if not mcp_url:
-            await send_telegram(chat_id, "MCP_SERVER_URL not set on Telegram handler.")
-            return JSONResponse({"ok": True})
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.get(f"{mcp_url}/diagnostic")
-                report = resp.json()
-        except Exception as e:
-            await send_telegram(chat_id, f"Diagnostic call failed: {e}")
-            return JSONResponse({"ok": True})
+        combined = {"integrations": {}, "summary": {"green": 0, "yellow": 0, "red": 0}}
 
-        s = report.get("summary", {})
+        # Local (Telegram handler) diagnostic
+        try:
+            local = await diagnostic()
+            for k, v in local.get("integrations", {}).items():
+                combined["integrations"][k] = v
+                combined["summary"][v["status"]] = combined["summary"].get(v["status"], 0) + 1
+        except Exception as e:
+            print(f"[diag] local failed: {e}")
+
+        # MCP server diagnostic
+        if mcp_url:
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    resp = await client.get(f"{mcp_url.rstrip('/')}/diagnostic")
+                    mcp_report = resp.json()
+                for k, v in mcp_report.get("integrations", {}).items():
+                    combined["integrations"][k] = v
+                    combined["summary"][v["status"]] = combined["summary"].get(v["status"], 0) + 1
+            except Exception as e:
+                combined["integrations"]["mcp_diagnostic"] = {
+                    "status": "red",
+                    "detail": f"Could not reach MCP /diagnostic: {e}",
+                    "fix": "Check MCP server deployment"
+                }
+                combined["summary"]["red"] = combined["summary"].get("red", 0) + 1
+
+        s = combined["summary"]
+        overall = (
+            "ALL GREEN ✅" if s.get("red", 0) == 0 and s.get("yellow", 0) == 0
+            else f"{s.get('red', 0)} broken, {s.get('yellow', 0)} partial, {s.get('green', 0)} working"
+        )
         lines = [
             "<b>Belmont Agent — Integration Health</b>",
-            f"<i>{report.get('overall', 'unknown')}</i>",
+            f"<i>{overall}</i>",
             f"✅ {s.get('green', 0)} green  ⚠️ {s.get('yellow', 0)} yellow  ❌ {s.get('red', 0)} red\n"
         ]
         icon = {"green": "✅", "yellow": "⚠️", "red": "❌"}
-        for name, info in report.get("integrations", {}).items():
+        for name, info in combined["integrations"].items():
             lines.append(f"{icon.get(info['status'], '?')} <b>{name}</b>: {info['detail']}")
             if info.get("fix"):
                 lines.append(f"   ↳ {info['fix']}")
         await send_telegram(chat_id, "\n".join(lines))
+        return JSONResponse({"ok": True})
+
+    # /next — coach mode: tells Jacob the single next action
+    elif text_lower in ("/next", "/nextstep"):
+        await send_typing(chat_id)
+        mcp_url = os.getenv("MCP_SERVER_URL", "")
+        all_red = []
+        try:
+            local = await diagnostic()
+            for k, v in local.get("integrations", {}).items():
+                if v["status"] == "red":
+                    all_red.append((k, v))
+        except Exception:
+            pass
+        if mcp_url:
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.get(f"{mcp_url.rstrip('/')}/diagnostic")
+                for k, v in resp.json().get("integrations", {}).items():
+                    if v["status"] == "red":
+                        all_red.append((k, v))
+            except Exception:
+                pass
+
+        if not all_red:
+            await send_telegram(
+                chat_id,
+                "<b>All integrations green.</b>\n\nNothing left to set up. Focus on the business."
+            )
+            return JSONResponse({"ok": True})
+
+        # Priority order — what gives Jacob the most leverage to fix next
+        priority = ["zep_memory", "anthropic", "qbo", "google", "meta_page", "openai_voice", "telegram", "mcp_server"]
+        all_red.sort(key=lambda x: priority.index(x[0]) if x[0] in priority else 99)
+        next_red = all_red[0]
+        name, info = next_red
+
+        priority_explainer = {
+            "zep_memory": "Memory is the agent's biggest force multiplier. Without it, every conversation starts cold. Highest ROI fix.",
+            "anthropic": "Without this the agent can't think. Critical.",
+            "qbo": "Unlocks 8 finance tools + real money data in /brief.",
+            "google": "Unlocks Calendar + Gmail in morning brief.",
+            "meta_page": "Unlocks page posting + insights (ads already work).",
+            "openai_voice": "Nice-to-have for field voice memos. Lower priority."
+        }
+
+        msg = (
+            f"<b>Next step:</b> fix <b>{name}</b>\n\n"
+            f"<b>What's wrong:</b> {info['detail']}\n\n"
+            f"<b>How to fix:</b> {info.get('fix', 'see /diag')}\n\n"
+            f"<b>Why it matters:</b> {priority_explainer.get(name, 'Surface area improvement.')}\n\n"
+            f"{len(all_red) - 1} other items remaining after this. Run /diag anytime to see the full list."
+        )
+        await send_telegram(chat_id, msg)
         return JSONResponse({"ok": True})
 
     elif text_lower in QUICK_COMMANDS:

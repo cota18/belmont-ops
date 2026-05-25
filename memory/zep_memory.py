@@ -69,18 +69,28 @@ async def load_memory(session_id: str, query: str = None) -> str:
     """
     Load relevant memory context for a session.
     Returns formatted string ready to inject into system prompt.
+
+    CRITICAL: This MUST silently degrade when Zep is unavailable.
+    The agent should never see error messages in its memory context —
+    that causes it to surface 'memory broken' messages to Jacob.
     """
+    if not ZEP_API_KEY:
+        return ""  # No memory available, no noise
+
     zep = get_client()
     context_parts = []
 
+    # ── Session summary ──────────────────────────────────────────────────
     try:
-        # Get conversation summary for this session
         memory = await zep.memory.get(session_id, lastn=10)
         if memory.summary:
             context_parts.append(f"RECENT SESSION SUMMARY:\n{memory.summary.content}")
+    except Exception as e:
+        print(f"[Zep] load session summary failed (silenced): {e}")
 
-        # Semantic search across all memory if query given
-        if query:
+    # ── Semantic search ──────────────────────────────────────────────────
+    if query:
+        try:
             results = await zep.memory.search_sessions(
                 user_id=USER_ID,
                 text=query,
@@ -93,15 +103,17 @@ async def load_memory(session_id: str, query: str = None) -> str:
                         relevant.append(f"- {r.message.content}")
                 if relevant:
                     context_parts.append("RELEVANT MEMORY:\n" + "\n".join(relevant))
+        except Exception as e:
+            print(f"[Zep] search_sessions failed (silenced): {e}")
 
-        # Get facts about Jacob stored by previous sessions
+    # ── User facts ───────────────────────────────────────────────────────
+    try:
         facts = await zep.user.get_facts(USER_ID)
         if facts and facts.facts:
             fact_lines = [f"- {f.fact}" for f in facts.facts[:15]]
             context_parts.append("KNOWN FACTS ABOUT JACOB & BELMONT:\n" + "\n".join(fact_lines))
-
     except Exception as e:
-        context_parts.append(f"[Memory load error: {e}]")
+        print(f"[Zep] get_facts failed (silenced): {e}")
 
     return "\n\n".join(context_parts) if context_parts else ""
 
