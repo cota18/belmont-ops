@@ -510,6 +510,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             "/today — What's on for today\n"
             "/tomorrow — Tomorrow's prep + sleep question\n"
             "/week — Week ahead snapshot\n"
+            "/schedule [date or 'week'] — Google Calendar view\n"
             "/brief — Full morning briefing\n"
             "\n<b>Business Data</b>\n"
             "/jobs — Active job list\n"
@@ -540,6 +541,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             "/think [decision] — Walk through a hard call\n"
             "/research [topic] — Deep web research with sources\n"
             "/lookup [topic] — Quick fact lookup\n"
+            "/email [to/subject/body] — Send email from Gmail\n"
             "/quote [project] — Fast ballpark estimate\n"
             "\n<b>Recall</b>\n"
             "/promises /decisions /lessons /wins /network\n"
@@ -870,6 +872,40 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             f"- Recommended next action for Belmont, if any\n\n"
             f"Be direct. If the topic is a person or company, dig into their public footprint. "
             f"If pricing, give actual current numbers with retailer names. No fluff."
+        )
+
+    # /schedule — show calendar for a specific date or this week
+    elif text_lower.startswith("/schedule") or text_lower == "/cal":
+        date_arg = user_text[len("/schedule"):].strip() if text_lower.startswith("/schedule") else ""
+        if date_arg.lower() in ("week", "this week", ""):
+            user_text = (
+                "Pull Jacob's Google Calendar for the full current week using google_calendar_week. "
+                "Show each day with events listed under it. Include start times (Edmonton/Mountain time). "
+                "If a day has no events, say 'clear'. Call out any scheduling conflicts or tight gaps. "
+                "End with one observation about the week's load — light/heavy/balanced."
+            )
+        else:
+            user_text = (
+                f"Pull Jacob's Google Calendar for {date_arg} using google_calendar_today with date={date_arg}. "
+                "List all events with times (Mountain time). Note any back-to-back blocks or time constraints. "
+                "End with how much free time he has and whether he can take on same-day site visits."
+            )
+
+    # /email — send a quick email directly from Telegram
+    elif text_lower.startswith("/email"):
+        email_content = user_text[len("/email"):].strip()
+        if not email_content or "\n" not in email_content and len(email_content) < 20:
+            await send_telegram(
+                chat_id,
+                "Format:\n/email\n[To: email@domain.com]\n[Subject: subject here]\n[Body: your message]"
+                "\n\nOr natural language:\n/email send Mike at mike@acme.com about the Riverside estimate saying I'll have it to him by Friday"
+            )
+            return JSONResponse({"ok": True})
+        user_text = (
+            f"Jacob wants to send an email. Here's the request:\n\n{email_content}\n\n"
+            "Parse the recipient, subject, and body from this request. "
+            "Draft the email in a professional but direct Belmont voice (not corporate, not casual). "
+            "Then use gmail_send to send it. Confirm the send with: 'Sent to [email] — Subject: [subject]'."
         )
 
     # /think — decision walkthrough (genuinely hard call)
