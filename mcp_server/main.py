@@ -1027,8 +1027,45 @@ async def qbo_query(sql: str) -> dict:
     return await qbo_request("GET", "query", params={"query": sql})
 
 
+async def _persist_qbo_tokens_to_railway(access_token: str, refresh_token: str):
+    """Push new QBO tokens back to Railway so they survive redeploys."""
+    railway_token = os.getenv("RAILWAY_TOKEN", "")
+    project_id = os.getenv("RAILWAY_PROJECT_ID", "be63e025-0e77-4466-8e36-2e08ad2cf753")
+    env_id = os.getenv("RAILWAY_ENV_ID", "d02dce4a-0c67-4766-819d-10eb9be9dc9b")
+    service_id = os.getenv("RAILWAY_MCP_SERVICE_ID", "eb2b0794-5cf4-4092-a6ce-756ea1319870")
+
+    if not railway_token:
+        print("[QBO persist] RAILWAY_TOKEN not set — tokens saved in memory only (will reset on redeploy)")
+        return
+
+    async def upsert(name: str, value: str):
+        query = json.dumps({
+            "query": f'mutation {{ variableUpsert(input: {{ projectId: "{project_id}", environmentId: "{env_id}", serviceId: "{service_id}", name: "{name}", value: {json.dumps(value)} }}) }}'
+        })
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                resp = await c.post(
+                    "https://backboard.railway.app/graphql/v2",
+                    content=query,
+                    headers={
+                        "Authorization": f"Bearer {railway_token}",
+                        "Content-Type": "application/json"
+                    }
+                )
+                if resp.status_code == 200:
+                    print(f"[QBO persist] {name} pushed to Railway ✅")
+                else:
+                    print(f"[QBO persist] {name} push failed: {resp.status_code} {resp.text[:100]}")
+        except Exception as e:
+            print(f"[QBO persist] {name} exception: {e}")
+
+    await upsert("QBO_ACCESS_TOKEN", access_token)
+    await upsert("QBO_REFRESH_TOKEN", refresh_token)
+
+
 async def refresh_qbo_token() -> str:
-    """Refresh QBO OAuth token using refresh token. Logs errors for diagnosis."""
+    """Refresh QBO OAuth token using refresh token. Logs errors for diagnosis.
+    On success, persists new tokens to Railway so they survive redeploys."""
     import base64
     client_id = os.getenv("QBO_CLIENT_ID", "")
     client_secret = os.getenv("QBO_CLIENT_SECRET", "")
@@ -1057,9 +1094,12 @@ async def refresh_qbo_token() -> str:
                 data = resp.json()
                 new_access = data["access_token"]
                 new_refresh = data.get("refresh_token", refresh_token)
+                # Update in-memory immediately
                 os.environ["QBO_ACCESS_TOKEN"] = new_access
                 os.environ["QBO_REFRESH_TOKEN"] = new_refresh
                 print(f"[QBO refresh] Success — new access token obtained")
+                # Persist to Railway so tokens survive redeploys
+                await _persist_qbo_tokens_to_railway(new_access, new_refresh)
                 return new_access
             print(f"[QBO refresh] Failed: {resp.status_code} — {resp.text[:200]}")
     except Exception as e:
