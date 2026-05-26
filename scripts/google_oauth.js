@@ -40,7 +40,7 @@ const PROJECT_ID = process.env.RAILWAY_PROJECT_ID || "be63e025-0e77-4466-8e36-2e
 const ENV_ID = process.env.RAILWAY_ENV_ID || "d02dce4a-0c67-4766-819d-10eb9be9dc9b";
 const TELEGRAM_SERVICE_ID = process.env.RAILWAY_TELEGRAM_SERVICE_ID || "e035affa-1533-4ba4-a20e-6119b44d4e38";
 const MCP_SERVICE_ID = process.env.RAILWAY_MCP_SERVICE_ID || "eb2b0794-5cf4-4092-a6ce-756ea1319870";
-const REDIRECT_URI = "http://localhost:3456/callback";
+const REDIRECT_URI = "http://127.0.0.1:3456/callback";
 
 if (!CLIENT_ID || !CLIENT_SECRET) {
   console.error("❌ GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not set.");
@@ -105,6 +105,9 @@ async function pushToRailway(tokens) {
   const vars = [
     { name: "GOOGLE_REFRESH_TOKEN", value: tokens.refresh_token },
     { name: "GOOGLE_ACCESS_TOKEN", value: tokens.access_token },
+    // Keep client credentials in sync with whichever client generated these tokens
+    { name: "GOOGLE_CLIENT_ID", value: CLIENT_ID },
+    { name: "GOOGLE_CLIENT_SECRET", value: CLIENT_SECRET },
   ];
   console.log("\n🚂 Pushing tokens to Railway...");
   for (const { name, value } of vars) {
@@ -169,8 +172,8 @@ async function main() {
     }
   });
 
-  server.listen(3456, () => {
-    console.log("📡 Callback server: http://localhost:3456");
+  server.listen(3456, "127.0.0.1", () => {
+    console.log("📡 Callback server: http://127.0.0.1:3456");
     console.log("\n🌐 Opening Google sign-in in your browser...");
     console.log("   (paste manually if browser didn't open:)\n");
     console.log(`   ${authUrl}\n`);

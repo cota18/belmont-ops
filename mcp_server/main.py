@@ -1028,30 +1028,56 @@ async def qbo_query(sql: str) -> dict:
 
 
 async def refresh_qbo_token() -> str:
-    """Refresh QBO OAuth token using refresh token."""
+    """Refresh QBO OAuth token using refresh token. Logs errors for diagnosis."""
     import base64
-    creds = base64.b64encode(
-        f"{os.getenv('QBO_CLIENT_ID')}:{os.getenv('QBO_CLIENT_SECRET')}".encode()
-    ).decode()
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
-            headers={
-                "Authorization": f"Basic {creds}",
-                "Content-Type": "application/x-www-form-urlencoded"
-            },
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": os.getenv("QBO_REFRESH_TOKEN")
-            }
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            os.environ["QBO_ACCESS_TOKEN"] = data["access_token"]
-            if "refresh_token" in data:
-                os.environ["QBO_REFRESH_TOKEN"] = data["refresh_token"]
-            return data["access_token"]
+    client_id = os.getenv("QBO_CLIENT_ID", "")
+    client_secret = os.getenv("QBO_CLIENT_SECRET", "")
+    refresh_token = os.getenv("QBO_REFRESH_TOKEN", "")
+
+    if not all([client_id, client_secret, refresh_token]):
+        print(f"[QBO refresh] Missing credentials: client_id={bool(client_id)}, secret={bool(client_secret)}, refresh={bool(refresh_token)}")
+        return None
+
+    creds = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+                headers={
+                    "Authorization": f"Basic {creds}",
+                    "Content-Type": "application/x-www-form-urlencoded"
+                },
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token
+                }
+            )
+            print(f"[QBO refresh] Status: {resp.status_code}, body: {resp.text[:300]}")
+            if resp.status_code == 200:
+                data = resp.json()
+                new_access = data["access_token"]
+                new_refresh = data.get("refresh_token", refresh_token)
+                os.environ["QBO_ACCESS_TOKEN"] = new_access
+                os.environ["QBO_REFRESH_TOKEN"] = new_refresh
+                print(f"[QBO refresh] Success — new access token obtained")
+                return new_access
+            print(f"[QBO refresh] Failed: {resp.status_code} — {resp.text[:200]}")
+    except Exception as e:
+        print(f"[QBO refresh] Exception: {e}")
     return None
+
+
+@app.get("/qbo-refresh")
+async def force_qbo_refresh(x_mcp_secret: str = Header(None)):
+    """Force a QBO token refresh and return the result for diagnosis."""
+    if MCP_SECRET and x_mcp_secret != MCP_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid MCP secret")
+    new_token = await refresh_qbo_token()
+    if new_token:
+        # Test it immediately
+        test = await qbo_request("GET", "companyinfo/{}".format(os.getenv("QBO_REALM_ID")))
+        return {"status": "ok", "token_obtained": True, "test_call": "success" if "error" not in test else test.get("error")}
+    return {"status": "failed", "token_obtained": False, "detail": "Check Railway logs for [QBO refresh] lines"}
 
 
 async def execute_qbo(tool: str, params: dict) -> dict:
