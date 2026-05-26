@@ -1121,43 +1121,79 @@ async def refresh_qbo_token() -> str:
 
 @app.get("/jobtread-fields")
 async def jobtread_field_probe():
-    """Probe what field names exist on a JobTread job — used to find pipeline status field."""
+    """Probe what field names exist on a JobTread job and org — find pipeline status field."""
     org_id = await get_jobtread_org_id()
     results = {}
-    candidates = [
-        ("jobStatus_obj", {"id": {}, "name": {}}),
-        ("pipelineStatus_obj", {"id": {}, "name": {}}),
-        ("customStatus_obj", {"id": {}, "name": {}}),
-        ("status_obj", {"id": {}, "name": {}}),
-        ("phase_obj", {"id": {}, "name": {}}),
-        ("column_obj", {"id": {}, "name": {}}),
-        ("workflowStatus_obj", {"id": {}, "name": {}}),
-        ("statusId_scalar", None),
-        ("customStatusId_scalar", None),
+
+    # 1. Probe org-level: see if pipeline columns / job statuses are queryable
+    org_candidates = [
+        "jobStatuses", "pipelineColumns", "statuses", "statusOptions",
+        "customStatuses", "pipeline", "columns", "boardColumns", "workflowStages"
     ]
-    for field_label, subfields in candidates:
-        # field_label is descriptive; extract real field name
-        field_name = field_label.replace("_obj", "").replace("_scalar", "")
-        node_fields = {"id": {}, "name": {}, "number": {}}
-        if subfields is not None:
-            node_fields[field_name] = subfields
-        else:
-            node_fields[field_name] = {}
+    org_result = {}
+    for field in org_candidates:
         try:
             r = await jobtread_query({
                 "organization": {
                     "$": {"id": org_id},
-                    "jobs": {
-                        "$": {"size": 1},
-                        "nodes": node_fields
-                    }
+                    field: {"nodes": {"id": {}, "name": {}}}
+                }
+            })
+            val = r.get("organization", {}).get(field)
+            org_result[field] = val if val is not None else "NOT_IN_RESPONSE"
+        except Exception as e:
+            org_result[field] = f"ERROR: {str(e)[:60]}"
+    results["org_level"] = org_result
+
+    # 2. Probe job-level scalar fields (no subfields)
+    scalar_candidates = [
+        "status", "jobStatus", "customStatus", "pipelineStatus", "statusName",
+        "boardColumn", "column", "columnName", "stage", "stageName",
+        "pipelineStage", "pipelineColumn", "phase", "workflowStatus",
+        "currentStatus", "jobStage", "label", "tag"
+    ]
+    job_scalar = {}
+    try:
+        # Build one query with all candidates at once
+        node_fields = {"id": {}, "name": {}, "number": {}}
+        for f in scalar_candidates:
+            node_fields[f] = {}
+        r = await jobtread_query({
+            "organization": {
+                "$": {"id": org_id},
+                "jobs": {"$": {"size": 1}, "nodes": node_fields}
+            }
+        })
+        job = (r.get("organization", {}).get("jobs", {}).get("nodes") or [{}])[0]
+        for f in scalar_candidates:
+            v = job.get(f)
+            job_scalar[f] = v if v is not None else "null/missing"
+    except Exception as e:
+        job_scalar["_error"] = str(e)[:120]
+    results["job_scalar"] = job_scalar
+
+    # 3. Probe job-level object fields with id/name subfields
+    obj_candidates = [
+        "jobStatus", "status", "customStatus", "pipelineStatus",
+        "boardColumn", "column", "stage", "phase"
+    ]
+    job_obj = {}
+    for f in obj_candidates:
+        try:
+            r = await jobtread_query({
+                "organization": {
+                    "$": {"id": org_id},
+                    "jobs": {"$": {"size": 1}, "nodes": {"id": {}, f: {"id": {}, "name": {}}}}
                 }
             })
             job = (r.get("organization", {}).get("jobs", {}).get("nodes") or [{}])[0]
-            results[field_name] = job.get(field_name, "NOT_IN_RESPONSE")
+            v = job.get(f)
+            job_obj[f] = v if v is not None else "null/missing"
         except Exception as e:
-            results[field_name] = f"ERROR: {str(e)[:80]}"
-    return {"field_probe": results, "org_id": org_id}
+            job_obj[f] = f"ERROR: {str(e)[:60]}"
+    results["job_obj"] = job_obj
+
+    return {"probe": results, "org_id": org_id}
 
 
 @app.get("/qbo-refresh")
