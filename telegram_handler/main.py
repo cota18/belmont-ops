@@ -380,7 +380,9 @@ async def transcribe_voice(file_id: str) -> str:
         os.unlink(tmp_path)
         if resp.status_code == 200:
             return resp.json().get("text", "").strip()
-        return "[Voice message received — add OPENAI_API_KEY to enable transcription]"
+        # Show the actual API error so it's diagnosable
+        err_body = resp.text[:300] if resp.text else "no response body"
+        return f"[Voice transcription failed ({resp.status_code}): {err_body}]"
     except Exception as e:
         return f"[Voice transcription error: {e}]"
 

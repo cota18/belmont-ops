@@ -135,13 +135,28 @@ async def generate_briefing() -> str:
             )
             active = [j for j in nodes if not j.get("closedOn")]
             if active:
+                # Group by inferred pipeline stage
+                from collections import defaultdict
+                by_stage = defaultdict(list)
+                for j in active:
+                    stage = j.get("_stage", "New Lead")
+                    by_stage[stage].append(j)
+
+                stage_order = ["New Lead", "Estimating", "Construction / In Progress", "Closed"]
                 lines.append(f"*Active Jobs ({len(active)}):*")
-                for j in active[:5]:
-                    name = j.get("name") or "Untitled"
-                    number = j.get("number", "")
-                    label = f"#{number} {name}" if number else name
-                    location = (j.get("location") or {}).get("name", "")
-                    lines.append(f"  - {label}" + (f" — {location}" if location else ""))
+                for stage in stage_order:
+                    jobs_in_stage = by_stage.get(stage, [])
+                    if not jobs_in_stage:
+                        continue
+                    lines.append(f"  [{stage}]")
+                    for j in jobs_in_stage[:4]:
+                        name = j.get("name") or "Untitled"
+                        number = j.get("number", "")
+                        client_name = (j.get("location") or {}).get("account", {}).get("name", "")
+                        label = f"#{number} {name}"
+                        if client_name and client_name.lower() not in name.lower():
+                            label += f" — {client_name}"
+                        lines.append(f"    - {label}")
             else:
                 lines.append("*Jobs:* No active jobs right now.")
         else:

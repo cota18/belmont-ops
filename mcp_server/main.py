@@ -254,11 +254,11 @@ async def list_tools():
             # ── JOBTREAD ──────────────────────────────────────────
             {
                 "name": "jobtread_list_jobs",
-                "description": "List all jobs in JobTread. Filter by status: active, completed, pending, all.",
+                "description": "List all jobs in JobTread with inferred pipeline stage. Each job includes a '_stage' field: 'New Lead' (no estimates yet), 'Estimating' (draft/sent estimate), 'Construction / In Progress' (approved estimate), or 'Closed'. Use this to sort jobs by pipeline column. Filter by status: active (open jobs), completed (closed), all.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "status": {"type": "string", "enum": ["active", "completed", "pending", "all"], "default": "active"}
+                        "status": {"type": "string", "enum": ["active", "completed", "all"], "default": "active"}
                     }
                 }
             },
@@ -712,7 +712,7 @@ async def execute_jobtread(tool: str, params: dict) -> dict:
         elif status == "completed":
             jobs_args["where"] = ["closedOn", "!=", None]
         # "all" gets no filter
-        return await jobtread_query({
+        raw = await jobtread_query({
             "organization": {
                 "$": {"id": org_id},
                 "jobs": {
@@ -723,12 +723,38 @@ async def execute_jobtread(tool: str, params: dict) -> dict:
                         "location": {
                             "id": {}, "name": {}, "address": {},
                             "account": {"id": {}, "name": {}}
+                        },
+                        # Fetch recent customer-facing documents to infer pipeline stage
+                        "documents": {
+                            "$": {"size": 5, "where": ["type", "=", "customerOrder"]},
+                            "nodes": {"id": {}, "status": {}, "type": {}, "name": {}}
                         }
                     },
                     "nextPage": {}
                 }
             }
         })
+        # Annotate each job with an inferred pipeline stage based on document status.
+        # JobTread's board columns (New Lead, Estimating, Construction, Closed) are UI-only
+        # and not exposed as a queryable API field — so we derive stage from activity.
+        try:
+            jobs = raw.get("organization", {}).get("jobs", {}).get("nodes", [])
+            for job in jobs:
+                docs = job.get("documents", {}).get("nodes", []) if job.get("documents") else []
+                statuses = [d.get("status", "").lower() for d in docs]
+                if job.get("closedOn"):
+                    job["_stage"] = "Closed"
+                elif any(s in ("approved", "accepted", "invoiced") for s in statuses):
+                    job["_stage"] = "Construction / In Progress"
+                elif any(s in ("sent", "draft", "pending") for s in statuses):
+                    job["_stage"] = "Estimating"
+                elif docs:
+                    job["_stage"] = "Estimating"
+                else:
+                    job["_stage"] = "New Lead"
+        except Exception:
+            pass
+        return raw
 
     elif tool == "jobtread_get_job_details":
         return await jobtread_query({
