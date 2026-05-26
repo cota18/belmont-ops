@@ -143,7 +143,7 @@ async def generate_briefing() -> str:
                     stage = j.get("_stage", "New Lead")
                     by_stage[stage].append(j)
 
-                stage_order = ["New Lead", "Estimating", "Construction / In Progress", "Closed"]
+                stage_order = ["New Lead", "Estimating", "Pending", "Construction", "Closed Won", "Closed Lost"]
                 lines.append(f"*Active Jobs ({len(active)}):*")
                 for stage in stage_order:
                     jobs_in_stage = by_stage.get(stage, [])

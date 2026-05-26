@@ -254,7 +254,7 @@ async def list_tools():
             # ── JOBTREAD ──────────────────────────────────────────
             {
                 "name": "jobtread_list_jobs",
-                "description": "List all jobs in JobTread with inferred pipeline stage. Each job includes a '_stage' field: 'New Lead' (no estimates yet), 'Estimating' (draft/sent estimate), 'Construction / In Progress' (approved estimate), or 'Closed'. Use this to sort jobs by pipeline column. Filter by status: active (open jobs), completed (closed), all.",
+                "description": "List all jobs in JobTread with inferred pipeline stage. Each job includes a '_stage' field matching Belmont's pipeline: 'New Lead' (no estimates), 'Estimating' (draft estimate in progress), 'Pending' (estimate sent to customer, awaiting response), 'Construction' (estimate approved/accepted, work underway), 'Closed Won' (closed with approved estimate), 'Closed Lost' (closed, no approved estimate). Use this to group jobs by stage in reports.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -734,21 +734,33 @@ async def execute_jobtread(tool: str, params: dict) -> dict:
                 }
             }
         })
-        # Annotate each job with an inferred pipeline stage based on document status.
-        # JobTread's board columns (New Lead, Estimating, Construction, Closed) are UI-only
-        # and not exposed as a queryable API field — so we derive stage from activity.
+        # Annotate each job with an inferred pipeline stage matching Belmont's board:
+        # New Lead → Estimating → Pending → Construction → Closed Won / Closed Lost
+        # JobTread's board columns are UI-only and not a queryable API field, so we
+        # derive stage from document (estimate) activity and the closedOn field.
+        # "Awaiting Carlen" cannot be reliably detected from the API — those jobs
+        # will appear as "New Lead" until an estimate draft is created.
         try:
             jobs = raw.get("organization", {}).get("jobs", {}).get("nodes", [])
             for job in jobs:
                 docs = job.get("documents", {}).get("nodes", []) if job.get("documents") else []
                 statuses = [d.get("status", "").lower() for d in docs]
+                has_approved = any(s in ("approved", "accepted", "invoiced") for s in statuses)
+                has_sent     = any(s in ("sent",) for s in statuses)
+                has_draft    = any(s in ("draft", "pending") for s in statuses)
+                has_declined = any(s in ("declined", "expired") for s in statuses)
+
                 if job.get("closedOn"):
-                    job["_stage"] = "Closed"
-                elif any(s in ("approved", "accepted", "invoiced") for s in statuses):
-                    job["_stage"] = "Construction / In Progress"
-                elif any(s in ("sent", "draft", "pending") for s in statuses):
-                    job["_stage"] = "Estimating"
-                elif docs:
+                    # Closed Won = was approved/invoiced; Closed Lost = never got there
+                    if has_approved:
+                        job["_stage"] = "Closed Won"
+                    else:
+                        job["_stage"] = "Closed Lost"
+                elif has_approved:
+                    job["_stage"] = "Construction"
+                elif has_sent:
+                    job["_stage"] = "Pending"
+                elif has_draft or docs:
                     job["_stage"] = "Estimating"
                 else:
                     job["_stage"] = "New Lead"
