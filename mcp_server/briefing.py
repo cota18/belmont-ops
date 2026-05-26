@@ -7,7 +7,10 @@ Pushes result to Jacob via Telegram.
 import asyncio
 import httpx
 import os
+import pytz
 from datetime import datetime, timezone
+
+EDMONTON = pytz.timezone("America/Edmonton")
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 JACOB_CHAT_ID = os.environ.get("JACOB_CHAT_ID", "")
@@ -45,7 +48,7 @@ async def send_telegram(client: httpx.AsyncClient, message: str):
 
 
 async def generate_briefing() -> str:
-    today_str = datetime.now().strftime("%A, %B %d")
+    today_str = datetime.now(EDMONTON).strftime("%A, %B %d")
     lines = [f"*Belmont Ops — {today_str}*\n"]
 
     async with httpx.AsyncClient() as client:
@@ -61,10 +64,8 @@ async def generate_briefing() -> str:
                     try:
                         from datetime import datetime as dt
                         t = dt.fromisoformat(start.replace("Z", "+00:00"))
-                        mst_hour = (t.hour - 7) % 24
-                        am_pm = "AM" if mst_hour < 12 else "PM"
-                        display_hour = mst_hour % 12 or 12
-                        time_str = f"{display_hour}:{t.minute:02d} {am_pm}"
+                        t_local = t.astimezone(EDMONTON)
+                        time_str = t_local.strftime("%-I:%M %p")
                     except Exception:
                         time_str = str(start)[:16]
                 else:
@@ -174,7 +175,7 @@ async def generate_briefing() -> str:
             )
             if inv_list:
                 from datetime import datetime as dt
-                today = dt.now().date()
+                today = dt.now(EDMONTON).date()
                 total_ar = sum(float(i.get("Balance", 0) or 0) for i in inv_list)
                 overdue = [
                     i for i in inv_list
