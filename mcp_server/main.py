@@ -1119,6 +1119,47 @@ async def refresh_qbo_token() -> str:
     return None
 
 
+@app.get("/jobtread-fields")
+async def jobtread_field_probe():
+    """Probe what field names exist on a JobTread job — used to find pipeline status field."""
+    org_id = await get_jobtread_org_id()
+    results = {}
+    candidates = [
+        ("jobStatus_obj", {"id": {}, "name": {}}),
+        ("pipelineStatus_obj", {"id": {}, "name": {}}),
+        ("customStatus_obj", {"id": {}, "name": {}}),
+        ("status_obj", {"id": {}, "name": {}}),
+        ("phase_obj", {"id": {}, "name": {}}),
+        ("column_obj", {"id": {}, "name": {}}),
+        ("workflowStatus_obj", {"id": {}, "name": {}}),
+        ("statusId_scalar", None),
+        ("customStatusId_scalar", None),
+    ]
+    for field_label, subfields in candidates:
+        # field_label is descriptive; extract real field name
+        field_name = field_label.replace("_obj", "").replace("_scalar", "")
+        node_fields = {"id": {}, "name": {}, "number": {}}
+        if subfields is not None:
+            node_fields[field_name] = subfields
+        else:
+            node_fields[field_name] = {}
+        try:
+            r = await jobtread_query({
+                "organization": {
+                    "$": {"id": org_id},
+                    "jobs": {
+                        "$": {"size": 1},
+                        "nodes": node_fields
+                    }
+                }
+            })
+            job = (r.get("organization", {}).get("jobs", {}).get("nodes") or [{}])[0]
+            results[field_name] = job.get(field_name, "NOT_IN_RESPONSE")
+        except Exception as e:
+            results[field_name] = f"ERROR: {str(e)[:80]}"
+    return {"field_probe": results, "org_id": org_id}
+
+
 @app.get("/qbo-refresh")
 async def force_qbo_refresh(x_mcp_secret: str = Header(None)):
     """Force a QBO token refresh and return the result for diagnosis."""
