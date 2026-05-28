@@ -20,9 +20,9 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from agent import run_agent
-from memory.zep_memory import (
+from memory.mem0_memory import (
     ensure_user, ensure_session, load_memory,
-    save_exchange, get_session_id
+    save_exchange, get_session_id, save_fact, get_all_memories
 )
 
 app = FastAPI(title="Belmont Telegram Handler")
@@ -142,33 +142,27 @@ async def diagnostic():
         except Exception as e:
             mark("anthropic", "yellow", f"Cannot verify: {str(e)[:100]}", "")
 
-    # ── ZEP MEMORY ────────────────────────────────────────────────────────
-    zep_key = os.getenv("ZEP_API_KEY", "")
-    if not zep_key:
-        mark("zep_memory", "red", "ZEP_API_KEY not set — no long-term memory",
-             "Sign up FREE at app.getzep.com, create project, copy API key")
-    elif zep_key in ("PENDING",):
-        mark("zep_memory", "red", "ZEP_API_KEY is placeholder",
-             "Replace with real key from app.getzep.com")
+    # ── MEM0 MEMORY ───────────────────────────────────────────────────────
+    mem0_key = os.getenv("MEM0_API_KEY", "")
+    if not mem0_key:
+        mark("memory", "red", "MEM0_API_KEY not set — no long-term memory",
+             "Sign up FREE at app.mem0.ai → Settings → API Keys → add as MEM0_API_KEY on Railway")
     else:
         try:
-            from zep_cloud.client import AsyncZep
-            zep = AsyncZep(api_key=zep_key)
-            try:
-                user = await zep.user.get("jacob_cota")
-                mark("zep_memory", "green", f"Connected — user '{user.user_id}' exists")
-            except Exception as user_err:
-                err = str(user_err)[:150].lower()
-                if "401" in err or "unauthorized" in err or "invalid api key" in err:
-                    mark("zep_memory", "red", "401 Unauthorized — key invalid/expired",
-                         "Generate new key at app.getzep.com Settings > API Keys")
-                elif "not found" in err or "404" in err:
-                    mark("zep_memory", "yellow", "Key valid, user doesn't exist yet",
-                         "Send any Telegram message — user auto-creates")
-                else:
-                    mark("zep_memory", "yellow", f"Unexpected: {str(user_err)[:120]}", "")
+            from mem0 import AsyncMemoryClient
+            m = AsyncMemoryClient(api_key=mem0_key)
+            # Quick test: get all memories (lightweight call)
+            mems = await asyncio.to_thread(m.get_all, user_id="jacob_belmont")
+            count = len(mems) if mems else 0
+            mark("memory", "green", f"mem0 connected — {count} memories stored for jacob_belmont")
         except Exception as e:
-            mark("zep_memory", "red", f"Client init failed: {str(e)[:120]}", "")
+            err = str(e)[:150].lower()
+            if "401" in err or "unauthorized" in err or "invalid" in err:
+                mark("memory", "red", "401 Unauthorized — MEM0_API_KEY invalid",
+                     "Regenerate key at app.mem0.ai → Settings → API Keys")
+            else:
+                mark("memory", "yellow", f"mem0 check failed: {str(e)[:100]}",
+                     "Check MEM0_API_KEY at app.mem0.ai")
 
     # ── OPENAI (voice transcription) ──────────────────────────────────────
     oai = os.getenv("OPENAI_API_KEY", "")
@@ -251,6 +245,7 @@ QUICK_COMMANDS = {
     "/recap": "Give me a full business snapshot: active jobs count, open pipeline value, total receivables, any overdue invoices, and the top 3 things I should focus on this week.",
     "/subs": "List all subcontractors stored in memory for Belmont. Show name, trade, rate, and last job worked together. If none are stored yet, say so and explain how to add them.",
     "/pipeline": "Pull all open estimates from JobTread. Calculate total pipeline value, average estimate size, and which ones are oldest. Rank by age and flag any over 14 days.",
+    "/receipt": "Jacob is about to send a photo of a receipt. Tell him: 'Ready — send the photo and I'll read it and log it to QuickBooks for you.'",
     "/exit": "Check my exit tracker. Based on current QBO revenue data, how am I tracking toward the $8K/month net income target for 6 consecutive months? What's the gap and what's the fastest path to closing it?",
     "/weather": "Call weather_red_deer_forecast for the next 3 days. Flag any outdoor-work risk (deck, framing, concrete, roof) and tell me what to reschedule.",
     "/promises": "Search Zep memory for commitments I've made in the last 14 days (anything I said I'd do by a date). List them with status: kept, pending, or dropped. Be direct — call out anything I've ghosted.",
@@ -452,7 +447,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     if photos:
         await send_typing(chat_id)
         file_id = photos[-1]["file_id"]
-        caption = message.get("caption", "Analyze this image and tell me what it is.")
+        caption = message.get("caption", "").strip()
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 file_info = await client.get(
@@ -463,33 +458,30 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
                 img_bytes = (await client.get(file_url)).content
 
             img_b64 = base64.b64encode(img_bytes).decode()
-            is_receipt = any(w in caption.lower() for w in
-                             ["receipt", "expense", "invoice", "bill", "cost"])
 
-            no_caption = not message.get("caption")
-            if is_receipt:
-                vision_prompt = (
-                    f"Jacob sent a photo with caption: '{caption}'\n"
-                    "This appears to be a receipt or expense document. Extract:\n"
-                    "- Vendor/supplier name\n"
-                    "- Total amount\n"
-                    "- Date\n"
-                    "- Category (materials, fuel, tools, food, subcontractor, other)\n"
-                    "Confirm the details and offer to log it to QuickBooks as an expense."
-                )
-            elif no_caption:
-                vision_prompt = (
-                    "Jacob sent a job site photo with no caption. "
-                    "Describe what you see in the context of a construction site. "
-                    "Then ask: 'Which job should I log this to?' "
-                    "Once he replies with a job name, log it as a progress note in JobTread."
-                )
+            # Always use smart receipt-first detection.
+            # Claude will decide if it's a receipt and act accordingly.
+            if caption:
+                context_line = f"Jacob sent a photo with caption: '{caption}'\n\n"
             else:
-                vision_prompt = (
-                    f"Jacob sent a photo with caption: '{caption}'\n"
-                    "Analyze this image in the context of his construction business. "
-                    "Be direct and useful."
-                )
+                context_line = "Jacob sent a photo with no caption.\n\n"
+
+            vision_prompt = (
+                f"{context_line}"
+                "First, look at the image and determine: is this a receipt, bill, or invoice?\n\n"
+                "IF YES (it's a receipt/bill/invoice):\n"
+                "Extract and confirm these details:\n"
+                "  - Vendor/store name\n"
+                "  - Total amount (look for TOTAL, GRAND TOTAL, or the final amount)\n"
+                "  - Date of purchase\n"
+                "  - What was purchased (brief description)\n"
+                "  - Category: materials, fuel, tools, equipment, subcontractor, food/entertainment, or other\n\n"
+                "Then say: 'Got it — [Vendor] $[amount] on [date]. Which job should I charge this to? "
+                "Reply with the job name or number and I'll log it to QuickBooks.'\n\n"
+                "IF NO (it's a job site photo, document, or something else):\n"
+                "Describe what you see briefly in the context of a construction business. "
+                "If it looks like a job site, ask which job it belongs to and offer to log it as a progress note."
+            )
 
             vision_content = [
                 {"type": "image", "source": {
@@ -563,6 +555,9 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             "/risk [text] — Risk flag\n"
             "/opp [text] — Opportunity\n"
             "/expense [vendor amount cat] — Log expense\n"
+            "/receipt — Snap a receipt photo to auto-log it\n"
+            "/memory — See everything I remember about you\n"
+            "/remember [fact] — Force-save a specific fact\n"
             "\n<b>Thinking + Research</b>\n"
             "/think [decision] — Walk through a hard call\n"
             "/research [topic] — Deep web research with sources\n"
@@ -1099,6 +1094,24 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         await send_telegram(chat_id, msg)
         return JSONResponse({"ok": True})
 
+    elif text_lower == "/memory":
+        mems = await get_all_memories()
+        if mems:
+            lines = "\n".join(f"{i+1}. {m}" for i, m in enumerate(mems[:20]))
+            await send_telegram(chat_id, f"What I remember about you and Belmont ({len(mems)} total):\n\n{lines}")
+        else:
+            await send_telegram(chat_id, "No memories stored yet. As we talk I'll automatically remember important facts.")
+        return JSONResponse({"ok": True})
+
+    elif text_lower.startswith("/remember "):
+        fact = user_text[len("/remember "):].strip()
+        if fact:
+            await save_fact(fact)
+            await send_telegram(chat_id, f"Got it, I'll remember: {fact}")
+        else:
+            await send_telegram(chat_id, "Format: /remember [fact]\nEx: /remember My lumber supplier is ABC Supply on 67th St")
+        return JSONResponse({"ok": True})
+
     elif text_lower in QUICK_COMMANDS:
         user_text = QUICK_COMMANDS[text_lower]
 
@@ -1110,7 +1123,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
 
     elif any(k in text_lower for k in SUB_ADD_KEYWORDS):
         user_text = (
-            f"{user_text}\n\nContext: Store this subcontractor in Zep memory under Belmont subs. "
+            f"{user_text}\n\nContext: Store this subcontractor in memory under Belmont subs. "
             "Fields to capture: name, trade, phone, rate (hourly or per project), notes. "
             "Confirm what was saved and how to recall it later with /subs."
         )
