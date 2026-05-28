@@ -571,7 +571,7 @@ async def list_tools():
             },
             {
                 "name": "google_calendar_create_event",
-                "description": "Create a new event on Jacob's Google Calendar. Use for scheduling site visits, client meetings, supplier calls, crew check-ins.",
+                "description": "Create a new event on the Belmont and Co shared Google Calendar (default). Use for scheduling site visits, client meetings, supplier calls, crew check-ins, deadlines.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -1616,8 +1616,12 @@ async def execute_google(tool: str, params: dict) -> dict:
             if params.get("attendee_emails"):
                 event_body["attendees"] = [{"email": e} for e in params["attendee_emails"]]
 
+            # Write to Belmont calendar by default; fall back to primary if not configured
+            belmont_cal_id = os.getenv("GOOGLE_EXTRA_CALENDAR_IDS", "").split(",")[0].strip()
+            target_cal = belmont_cal_id if belmont_cal_id else "primary"
+
             created = service_obj.events().insert(
-                calendarId="primary",
+                calendarId=target_cal,
                 body=event_body,
                 sendUpdates="all" if params.get("attendee_emails") else "none"
             ).execute()
