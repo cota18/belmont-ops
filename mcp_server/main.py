@@ -733,42 +733,79 @@ async def execute_jobtread(tool: str, params: dict) -> dict:
                         "documents": {
                             "$": {"size": 5, "where": ["type", "=", "customerOrder"]},
                             "nodes": {"id": {}, "status": {}, "type": {}, "name": {}}
+                        },
+                        # Custom fields — if set, used for accurate pipeline stage
+                        "customFields": {
+                            "nodes": {"id": {}, "name": {}, "value": {}}
+                        },
+                        # Labels/tags if supported
+                        "labels": {
+                            "nodes": {"id": {}, "name": {}, "color": {}}
                         }
                     },
                     "nextPage": {}
                 }
             }
         })
-        # Annotate each job with an inferred pipeline stage matching Belmont's board:
-        # New Lead → Estimating → Pending → Construction → Closed Won / Closed Lost
-        # JobTread's board columns are UI-only and not a queryable API field, so we
-        # derive stage from document (estimate) activity and the closedOn field.
-        # "Awaiting Carlen" cannot be reliably detected from the API — those jobs
-        # will appear as "New Lead" until an estimate draft is created.
+        # Annotate each job with pipeline stage.
+        # Priority: 1) Custom field named "Stage" or "Pipeline Stage" (accurate)
+        #           2) Label matching a known stage name (accurate)
+        #           3) Inferred from document statuses (approximate — board columns are
+        #              UI-only and NOT exposed by JobTread's API)
+        VALID_STAGES = {
+            "new lead", "awaiting carlen", "estimating", "pending",
+            "approved", "permitting", "construction", "closed won", "closed lost"
+        }
         try:
             jobs = raw.get("organization", {}).get("jobs", {}).get("nodes", [])
             for job in jobs:
-                docs = job.get("documents", {}).get("nodes", []) if job.get("documents") else []
-                statuses = [d.get("status", "").lower() for d in docs]
-                has_approved = any(s in ("approved", "accepted", "invoiced") for s in statuses)
-                has_sent     = any(s in ("sent",) for s in statuses)
-                has_draft    = any(s in ("draft", "pending") for s in statuses)
-                has_declined = any(s in ("declined", "expired") for s in statuses)
+                stage_set = False
 
-                if job.get("closedOn"):
-                    # Closed Won = was approved/invoiced; Closed Lost = never got there
-                    if has_approved:
-                        job["_stage"] = "Closed Won"
+                # ── 1. Custom fields (most accurate) ──────────────────────────
+                cf_nodes = job.get("customFields", {})
+                if cf_nodes and isinstance(cf_nodes, dict):
+                    cf_nodes = cf_nodes.get("nodes", [])
+                for cf in (cf_nodes or []):
+                    cf_name = (cf.get("name") or "").lower().strip()
+                    cf_val  = (cf.get("value") or "").strip()
+                    if cf_name in ("stage", "pipeline stage", "pipeline_stage") and cf_val:
+                        job["_stage"] = cf_val
+                        job["_stage_source"] = "custom_field"
+                        stage_set = True
+                        break
+
+                # ── 2. Labels matching a known stage name ──────────────────────
+                if not stage_set:
+                    lbl_nodes = job.get("labels", {})
+                    if lbl_nodes and isinstance(lbl_nodes, dict):
+                        lbl_nodes = lbl_nodes.get("nodes", [])
+                    for lbl in (lbl_nodes or []):
+                        lbl_name = (lbl.get("name") or "").strip()
+                        if lbl_name.lower() in VALID_STAGES:
+                            job["_stage"] = lbl_name
+                            job["_stage_source"] = "label"
+                            stage_set = True
+                            break
+
+                # ── 3. Inferred from document statuses (fallback) ──────────────
+                if not stage_set:
+                    docs = job.get("documents", {}).get("nodes", []) if job.get("documents") else []
+                    statuses = [d.get("status", "").lower() for d in docs]
+                    has_approved = any(s in ("approved", "accepted", "invoiced") for s in statuses)
+                    has_sent     = any(s in ("sent",) for s in statuses)
+                    has_draft    = any(s in ("draft", "pending") for s in statuses)
+
+                    if job.get("closedOn"):
+                        job["_stage"] = "Closed Won" if has_approved else "Closed Lost"
+                    elif has_approved:
+                        job["_stage"] = "Construction"
+                    elif has_sent:
+                        job["_stage"] = "Pending"
+                    elif has_draft or docs:
+                        job["_stage"] = "Estimating"
                     else:
-                        job["_stage"] = "Closed Lost"
-                elif has_approved:
-                    job["_stage"] = "Construction"
-                elif has_sent:
-                    job["_stage"] = "Pending"
-                elif has_draft or docs:
-                    job["_stage"] = "Estimating"
-                else:
-                    job["_stage"] = "New Lead"
+                        job["_stage"] = "New Lead"
+                    job["_stage_source"] = "inferred"  # agent knows this is approximate
         except Exception:
             pass
         return raw
