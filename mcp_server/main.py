@@ -646,7 +646,8 @@ async def execute_tool(request: Request, x_mcp_secret: str = Header(None)):
         elif tool_name.startswith("meta_"):
             result = await execute_meta(tool_name, params)
         elif tool_name in ("google_calendar_today", "google_calendar_week",
-                           "google_calendar_create_event", "gmail_urgent", "gmail_send"):
+                           "google_calendar_create_event", "gmail_urgent", "gmail_send",
+                           "google_list_calendars"):
             result = await execute_google(tool_name, params)
         elif tool_name == "weather_red_deer_forecast":
             result = await execute_weather(params)
