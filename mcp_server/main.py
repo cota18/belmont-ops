@@ -565,6 +565,11 @@ async def list_tools():
                 }
             },
             {
+                "name": "google_list_calendars",
+                "description": "List all Google Calendars accessible to Jacob's account. Returns calendar names and IDs. Use to find the ID of the 'Belmont and Co' shared calendar or any other calendar.",
+                "input_schema": {"type": "object", "properties": {}}
+            },
+            {
                 "name": "google_calendar_create_event",
                 "description": "Create a new event on Jacob's Google Calendar. Use for scheduling site visits, client meetings, supplier calls, crew check-ins.",
                 "input_schema": {
@@ -1466,6 +1471,21 @@ async def execute_google(tool: str, params: dict) -> dict:
         from datetime import datetime as dt, timedelta
         edmonton = pytz.timezone("America/Edmonton")
 
+        if tool == "google_list_calendars":
+            service_obj = build("calendar", "v3", credentials=creds)
+            cal_list = service_obj.calendarList().list().execute()
+            calendars = []
+            for c in cal_list.get("items", []):
+                calendars.append({
+                    "id": c.get("id"),
+                    "name": c.get("summary"),
+                    "description": c.get("description", ""),
+                    "primary": c.get("primary", False),
+                    "access_role": c.get("accessRole"),
+                    "color": c.get("backgroundColor", ""),
+                })
+            return {"calendars": calendars, "count": len(calendars)}
+
         if tool in ("google_calendar_today", "google_calendar_week"):
             service_obj = build("calendar", "v3", credentials=creds)
 
@@ -1483,16 +1503,41 @@ async def execute_google(tool: str, params: dict) -> dict:
                 day_end = edmonton.localize(dt.combine(sun, dt.max.time().replace(microsecond=0)))
                 label = f"{mon.isoformat()} to {sun.isoformat()}"
 
-            events_result = service_obj.events().list(
-                calendarId="primary",
-                timeMin=day_start.isoformat(),
-                timeMax=day_end.isoformat(),
-                singleEvents=True,
-                orderBy="startTime"
-            ).execute()
-            events = events_result.get("items", [])
+            # Query all calendars Jacob has access to (primary + any shared/extra)
+            # GOOGLE_EXTRA_CALENDAR_IDS = comma-separated list of additional calendar IDs
+            extra_ids_raw = os.getenv("GOOGLE_EXTRA_CALENDAR_IDS", "")
+            extra_ids = [x.strip() for x in extra_ids_raw.split(",") if x.strip()]
+            calendar_ids = ["primary"] + extra_ids
+
+            all_events = []
+            seen_ids = set()
+            for cal_id in calendar_ids:
+                try:
+                    result = service_obj.events().list(
+                        calendarId=cal_id,
+                        timeMin=day_start.isoformat(),
+                        timeMax=day_end.isoformat(),
+                        singleEvents=True,
+                        orderBy="startTime"
+                    ).execute()
+                    for e in result.get("items", []):
+                        eid = e.get("id", "")
+                        if eid not in seen_ids:
+                            seen_ids.add(eid)
+                            all_events.append((e, cal_id))
+                except Exception as cal_err:
+                    print(f"[google] Calendar {cal_id} query failed: {cal_err}")
+
+            # Sort merged events by start time
+            def _sort_key(item):
+                e, _ = item
+                s = e["start"].get("dateTime", e["start"].get("date", ""))
+                return s
+
+            all_events.sort(key=_sort_key)
+
             simplified = []
-            for e in events:
+            for e, cal_id in all_events:
                 start = e["start"].get("dateTime", e["start"].get("date", ""))
                 end = e["end"].get("dateTime", e["end"].get("date", ""))
                 simplified.append({
@@ -1503,6 +1548,7 @@ async def execute_google(tool: str, params: dict) -> dict:
                     "description": (e.get("description", "") or "")[:150],
                     "attendees": len(e.get("attendees", [])),
                     "event_id": e.get("id", ""),
+                    "calendar": cal_id,
                 })
             return {"events": simplified, "count": len(simplified), "period": label}
 
