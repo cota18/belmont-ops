@@ -373,6 +373,103 @@ async def meta_performance_check():
     await send_telegram("\n".join(lines))
 
 
+# ── SQUARESPACE LEAD MONITOR ──────────────────────────────────────────────────
+
+async def squarespace_lead_check():
+    """Daily 8 AM — scan Gmail for new Squarespace form submissions, log leads to memory."""
+    await trigger_agent_task(
+        "Check Gmail for Squarespace form submission emails received in the last 24 hours. "
+        "Search for emails with subject containing 'Form Submission' or 'New Submission' or "
+        "from 'squarespace' or 'noreply'. Use gmail_urgent with max_results=10, then look "
+        "through results for any contact/inquiry forms.\n\n"
+        "For each lead found:\n"
+        "1. Extract: name, email, phone (if given), project type, message/notes\n"
+        "2. Save to memory as a new lead with today's date\n"
+        "3. Draft a short reply Jacob can send (warm, professional, asks 1 qualifying question)\n\n"
+        "Format output:\n"
+        "NEW LEAD — [Name]\n"
+        "Contact: [email/phone]\n"
+        "Project: [what they want]\n"
+        "Their message: [brief summary]\n"
+        "Draft reply: [ready to send]\n\n"
+        "If no new leads in Gmail, say 'No new Squarespace leads in last 24h' and stop."
+    )
+
+
+# ── GOOGLE REVIEW SOLICITATION ────────────────────────────────────────────────
+
+async def google_review_check():
+    """Saturday 10 AM — check for jobs closed this week, draft review requests."""
+    from datetime import datetime, timedelta
+    import pytz
+
+    edmonton = pytz.timezone("America/Edmonton")
+    now = datetime.now(edmonton)
+    week_ago = (now - timedelta(days=8)).date().isoformat()
+
+    async with httpx.AsyncClient() as client:
+        resp = await call_mcp(client, "jobtread_list_jobs", {"status": "completed"})
+
+    nodes = (
+        resp.get("organization", {})
+        .get("jobs", {})
+        .get("nodes", [])
+    )
+
+    recently_closed = [
+        j for j in nodes
+        if j.get("closedOn", "") >= week_ago
+    ]
+
+    if not recently_closed:
+        return  # No closed jobs this week — stay quiet
+
+    lines = ["<b>Jobs closed this week — time to ask for reviews:</b>\n"]
+    for job in recently_closed[:5]:
+        name = job.get("name", "Unknown")
+        client_name = (
+            job.get("location", {})
+            .get("account", {})
+            .get("name", "the client")
+        )
+        closed = job.get("closedOn", "")[:10]
+
+        lines.append(
+            f"<b>{name}</b> — closed {closed}\n"
+            f"Client: {client_name}\n"
+            f"Draft review request:\n"
+            f"<i>Hi {client_name}, it was a pleasure working on your project. "
+            f"If you're happy with the result, a quick Google review would mean a lot to us — "
+            f"it helps other homeowners find Belmont & Co. "
+            f"[Google Review Link] Thanks again!</i>\n"
+        )
+
+    lines.append(
+        "\nReply '/review [client name]' to get a personalized version "
+        "or send it as-is."
+    )
+    await send_telegram("\n".join(lines))
+
+
+# ── GST REMITTANCE REMINDERS ──────────────────────────────────────────────────
+
+async def gst_reminder(quarter: str, due_date: str):
+    """Fire 14 days before each quarterly GST remittance due date."""
+    await trigger_agent_task(
+        f"Jacob's GST remittance reminder. Quarter: {quarter}. Due: {due_date} (14 days away).\n\n"
+        "Steps:\n"
+        "1. Pull QBO cash flow or P&L to estimate net tax collected this quarter if possible\n"
+        "2. Remind Jacob the due date and that CRA expects the payment by {due_date}\n"
+        "3. Flag if any invoices are still unpaid that would affect the GST amount\n\n"
+        "Format:\n"
+        "GST REMITTANCE DUE {due_date}\n"
+        "Quarter: {quarter}\n"
+        "Estimated GST collected: [from QBO if available, else 'check QBO']\n"
+        "Action: Log in to CRA My Business Account or pay via your bank's bill payment.\n"
+        "Reminder: File even if you have a nil balance."
+    )
+
+
 # ── EXIT METRIC TRACKER ───────────────────────────────────────────────────────
 
 async def exit_tracker():
@@ -462,6 +559,26 @@ def start_scheduler():
 
     # 1st of each month 7 AM Mountain — exit tracker
     scheduler.add_job(exit_tracker, CronTrigger(day=1, hour=7, minute=0, timezone=EDMONTON))
+
+    # Daily 8 AM Mountain — Squarespace lead email scan
+    scheduler.add_job(squarespace_lead_check, CronTrigger(hour=8, minute=15, day_of_week="mon-fri", timezone=EDMONTON))
+
+    # Saturday 10 AM Mountain — Google review solicitation for closed jobs
+    scheduler.add_job(google_review_check, CronTrigger(hour=10, minute=0, day_of_week="sat", timezone=EDMONTON))
+
+    # GST remittance reminders — 14 days before each quarterly due date
+    # Q1 (Jan-Mar) due Apr 30 → remind Apr 16
+    scheduler.add_job(gst_reminder, CronTrigger(month=4, day=16, hour=9, minute=0, timezone=EDMONTON),
+                      args=["Q1 (Jan–Mar)", "April 30"])
+    # Q2 (Apr-Jun) due Jul 31 → remind Jul 17
+    scheduler.add_job(gst_reminder, CronTrigger(month=7, day=17, hour=9, minute=0, timezone=EDMONTON),
+                      args=["Q2 (Apr–Jun)", "July 31"])
+    # Q3 (Jul-Sep) due Oct 31 → remind Oct 17
+    scheduler.add_job(gst_reminder, CronTrigger(month=10, day=17, hour=9, minute=0, timezone=EDMONTON),
+                      args=["Q3 (Jul–Sep)", "October 31"])
+    # Q4 (Oct-Dec) due Jan 31 → remind Jan 17
+    scheduler.add_job(gst_reminder, CronTrigger(month=1, day=17, hour=9, minute=0, timezone=EDMONTON),
+                      args=["Q4 (Oct–Dec)", "January 31"])
 
     scheduler.start()
     print(

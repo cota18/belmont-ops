@@ -253,6 +253,7 @@ QUICK_COMMANDS = {
     "/lessons": "Search Zep memory for lessons logged from past jobs. Pull the top 8 most relevant ones. These are my hard-earned rules — surface them.",
     "/network": "Search Zep memory for all builders, subs, vendors, and referral sources I've mentioned. Group by role. Flag anyone I haven't talked to in 60+ days as 'gone cold'.",
     "/wins": "Search Zep memory for daily wins I've logged in the last 14 days. Summarize momentum in 2-3 sentences. Be honest — if I've been dropping the ball, say so.",
+    "/leads": "Check Gmail right now for any Squarespace form submissions in the last 48 hours. Extract lead details, log to memory, and draft a reply for each one.",
 }
 
 # Estimate templates — quick ballparks. Detailed estimates still go through the estimating agent.
@@ -556,6 +557,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             "/opp [text] — Opportunity\n"
             "/expense [vendor amount cat] — Log expense\n"
             "/receipt — Snap a receipt photo to auto-log it\n"
+            "/changeorder [job amount desc] — Log a change order\n"
             "/memory — See everything I remember about you\n"
             "/remember [fact] — Force-save a specific fact\n"
             "\n<b>Thinking + Research</b>\n"
@@ -570,6 +572,8 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             "/promises /decisions /lessons /wins /network\n"
             "/who [name] — Contact card\n"
             "/followup [name] — Client follow-up draft\n"
+            "/review [name] — Draft Google review request (SMS + email)\n"
+            "/leads — Check Gmail for new Squarespace leads\n"
             "\n<b>People</b>\n"
             "/subs — Subcontractor list\n"
             "/bjj — Log BJJ session\n"
@@ -741,6 +745,56 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             f"'just checking in' fluff\n"
             f"5. Under 80 words. Clear next step. Ready to copy-paste.\n"
             f"If you can't find anything, ask Jacob what context to use."
+        )
+
+    # /changeorder [job] [amount] [description] — log a change order
+    elif text_lower.startswith("/changeorder") or text_lower.startswith("/co "):
+        prefix_len = len("/changeorder") if text_lower.startswith("/changeorder") else len("/co ")
+        content = user_text[prefix_len:].strip()
+        if not content:
+            await send_telegram(
+                chat_id,
+                "Format: /changeorder [job name] [amount] [description]\n"
+                "Ex: /changeorder Anderson deck +2400 client added pergola posts\n\n"
+                "I'll log it to memory, track the running total for that job, "
+                "and remind you to invoice it."
+            )
+            return JSONResponse({"ok": True})
+        user_text = (
+            f"Jacob is logging a change order. Raw input: \"{content}\"\n\n"
+            "Parse out: job name, amount (positive = added scope, negative = reduction), "
+            "and description of what changed.\n\n"
+            "Steps:\n"
+            "1. Save to memory tagged 'change_order' with today's date, job name, amount, description\n"
+            "2. Search memory for previous change orders on this same job — total them up\n"
+            "3. Confirm back: job name, this change order amount, running CO total for job\n"
+            "4. Remind Jacob: 'Make sure this is captured in a JobTread change order document "
+            "and invoiced before the job closes.'\n\n"
+            "Keep response under 100 words. Confirm clearly."
+        )
+
+    # /review [client name] — draft a personalized Google review request
+    elif text_lower.startswith("/review"):
+        name = user_text[len("/review"):].strip()
+        if not name:
+            await send_telegram(
+                chat_id,
+                "Format: /review [client name]\nEx: /review Henderson\n\n"
+                "I'll draft a personalized Google review request based on their job."
+            )
+            return JSONResponse({"ok": True})
+        user_text = (
+            f"Draft a Google review request for {name}. Steps:\n"
+            f"1. Search memory and JobTread for context on {name}'s project — "
+            f"what was built, how it went, anything personal/notable\n"
+            f"2. Write a short, warm, specific message (3-4 sentences) that:\n"
+            f"   - References their actual project by name\n"
+            f"   - Thanks them genuinely\n"
+            f"   - Asks for a Google review naturally (not desperately)\n"
+            f"   - Includes placeholder: [Google Review Link]\n"
+            f"3. Write it as Jacob, first person, casual but professional\n\n"
+            f"Also draft an SMS version (under 160 chars) and an email version.\n"
+            f"Label each clearly: SMS / Email / WhatsApp"
         )
 
     # /snooze [hours] — set DND window (capped at 24h to prevent accidents)
