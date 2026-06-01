@@ -5,9 +5,12 @@ All scheduled tasks that run without Jacob asking.
 
 import os
 import asyncio
+import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import httpx
+
+EDMONTON = pytz.timezone("America/Edmonton")
 
 from state import is_snoozed
 
@@ -425,40 +428,40 @@ async def exit_tracker():
 # ── START ─────────────────────────────────────────────────────────────────────
 
 def start_scheduler():
-    scheduler = AsyncIOScheduler(timezone="America/Edmonton")
+    scheduler = AsyncIOScheduler(timezone=EDMONTON)
 
-    # Daily 7 AM — morning brief (M-F)
-    scheduler.add_job(morning_brief, CronTrigger(hour=7, minute=0, day_of_week="mon-fri"))
+    # Daily 7 AM Mountain — morning brief (M-F)
+    scheduler.add_job(morning_brief, CronTrigger(hour=7, minute=0, day_of_week="mon-fri", timezone=EDMONTON))
 
-    # Daily 9 AM — estimate follow-up check (M-F)
-    scheduler.add_job(estimate_followup_check, CronTrigger(hour=9, minute=0, day_of_week="mon-fri"))
+    # Daily 9 AM Mountain — estimate follow-up check (M-F)
+    scheduler.add_job(estimate_followup_check, CronTrigger(hour=9, minute=0, day_of_week="mon-fri", timezone=EDMONTON))
 
-    # Monday 8 AM — weekly job review
-    scheduler.add_job(weekly_job_review, CronTrigger(hour=8, minute=0, day_of_week="mon"))
+    # Monday 8 AM Mountain — weekly job review
+    scheduler.add_job(weekly_job_review, CronTrigger(hour=8, minute=0, day_of_week="mon", timezone=EDMONTON))
 
-    # Monday 8:30 AM — margin guardian
-    scheduler.add_job(margin_guardian, CronTrigger(hour=8, minute=30, day_of_week="mon"))
+    # Monday 8:30 AM Mountain — margin guardian
+    scheduler.add_job(margin_guardian, CronTrigger(hour=8, minute=30, day_of_week="mon", timezone=EDMONTON))
 
-    # Tuesday 9 AM — Meta ad performance
-    scheduler.add_job(meta_performance_check, CronTrigger(hour=9, minute=0, day_of_week="tue"))
+    # Tuesday 9 AM Mountain — Meta ad performance
+    scheduler.add_job(meta_performance_check, CronTrigger(hour=9, minute=0, day_of_week="tue", timezone=EDMONTON))
 
-    # Wednesday 9 AM — overdue invoice alert
-    scheduler.add_job(overdue_invoice_alert, CronTrigger(hour=9, minute=0, day_of_week="wed"))
+    # Wednesday 9 AM Mountain — overdue invoice alert
+    scheduler.add_job(overdue_invoice_alert, CronTrigger(hour=9, minute=0, day_of_week="wed", timezone=EDMONTON))
 
-    # Friday 4 PM — cash summary
-    scheduler.add_job(friday_cash_summary, CronTrigger(hour=16, minute=0, day_of_week="fri"))
+    # Friday 4 PM Mountain — cash summary
+    scheduler.add_job(friday_cash_summary, CronTrigger(hour=16, minute=0, day_of_week="fri", timezone=EDMONTON))
 
-    # Friday 5 PM — debrief questions
-    scheduler.add_job(friday_debrief, CronTrigger(hour=17, minute=0, day_of_week="fri"))
+    # Friday 5 PM Mountain — debrief questions
+    scheduler.add_job(friday_debrief, CronTrigger(hour=17, minute=0, day_of_week="fri", timezone=EDMONTON))
 
-    # Mon-Thu 8 PM — daily win capture
-    scheduler.add_job(daily_win_capture, CronTrigger(hour=20, minute=0, day_of_week="mon-thu"))
+    # Mon-Thu 4:30 PM Mountain — daily end-of-day capture
+    scheduler.add_job(daily_win_capture, CronTrigger(hour=16, minute=30, day_of_week="mon-thu", timezone=EDMONTON))
 
-    # Sunday 8 PM — pre-week recap
-    scheduler.add_job(sunday_recap, CronTrigger(hour=20, minute=0, day_of_week="sun"))
+    # Sunday 8 PM Mountain — pre-week recap
+    scheduler.add_job(sunday_recap, CronTrigger(hour=20, minute=0, day_of_week="sun", timezone=EDMONTON))
 
-    # 1st of each month 7 AM — exit tracker
-    scheduler.add_job(exit_tracker, CronTrigger(day=1, hour=7, minute=0))
+    # 1st of each month 7 AM Mountain — exit tracker
+    scheduler.add_job(exit_tracker, CronTrigger(day=1, hour=7, minute=0, timezone=EDMONTON))
 
     scheduler.start()
     print(
