@@ -14,6 +14,69 @@ BELMONT_BASE_CONTEXT = """
 - Jacob is the ONLY user of this agent — all messages are from Jacob
 === END HARDCODED FACTS ===
 
+=== BELMONT RATE SHEET v1.2 — Internal Use Only, Prices in CAD, Central Alberta ===
+
+RATE TYPE DEFINITIONS:
+- Belmont Rate: client-facing rate, already includes labour + markup. Use directly in quotes.
+- Supplier Rate: raw material cost from supplier. Add 10-20% material markup + labour on top.
+- Sub Cost: what Belmont pays the sub. Add GC margin on top before quoting client.
+- Multiplier (non-deck items): 1.30 to 1.70x base rate. Default 1.40. Use 1.50-1.70 for premium finish, tight access, high complexity.
+- Always add GST on top of everything.
+- Always add contingency: 5-15% on renovation jobs with unknowns.
+- Always add a minimum job charge for mobilization.
+
+DECKS — Belmont Direct Rates (apply to client, no multiplier needed):
+- Deck framing standard: $8.00/SF (simple rectangular, accessible site, standard span)
+- Deck framing high end: $10.00/SF (elevated, multi-level, or difficult access)
+- 5/4" wood decking labour + material: $3.50/SF (add on top of framing rate)
+- Vinyl deck wrap full system (membrane + perimeter cap): $16.00/SF
+
+COMPOSITE DECKING — Supplier Costs (Castle/Wolf Creek Q#162471):
+*** WARNING: These prices EXPIRED 2026-05-19. RECONFIRM before quoting. Do not use without verification. ***
+Infinity EVA Last:
+- Stocked colours (Light Cream/Oasis Palm/Caribbean Coral): $3.72/LF grooved
+- Non-stocked colours (Concrete Grey/Tiger Cove/Baltic Nero): $3.92/LF grooved
+- Riser 7.25" stocked: $9.28/LF ($111.36 per 12' board)
+- Riser 7.25" non-stocked: $9.60/LF ($115.20 per 12' board)
+- Fascia 12" all colours: $14.32/LF ($171.84 per 12' board)
+Vista Deckorators:
+- Stocked (Ironwood/Driftwood): $5.94/LF
+- Non-stocked (Silverwood/Dunewood): $6.12/LF
+- Fascia stocked: $9.24/LF ($110.87 per 12' board)
+- Fascia non-stocked: $9.44/LF ($113.28 per 12' board)
+Other composite lines (supplier cost, all expired — reconfirm before quoting):
+- Apex EVA: $9.80/LF decking, $17.55/LF fascia
+- Pioneer EVA: $12.70/LF decking, $17.61/LF fascia
+- Voyage Deckorators: $8.41/LF decking, $12.50/LF fascia
+- TimberTech Prime: $4.30/LF decking, $13.85/LF fascia
+- TimberTech Prime+: $5.16/LF decking, $14.09/LF fascia
+- TimberTech Terrain+: $6.35/LF decking, $13.09/LF fascia
+- TimberTech Reserve: $9.02/LF decking, $17.25/LF fascia
+- TimberTech Legacy: $10.85/LF decking, $19.90/LF fascia
+
+COMPOSITE FASTENERS — Supplier Costs (expired — reconfirm):
+- TimberTech Concealoc (100SF/box): $280.00/box
+- CAMO Edge Clip 90ct (50SF coverage): $42.13/box
+- CAMO Wedge Clip 90ct (50SF coverage): $47.03/box
+- CAMO Edge Clip 450ct (250SF coverage): $176.39/box
+- CAMO Edge Clip 900ct (500SF coverage): $352.79/box
+- CAMO Clip Drive Tool: $161.49/each
+
+FENCING:
+- Standard wood fence labour only: $15.00/LF (add material separately)
+- Fence post supply + set (concrete included): TBD per post
+- 6' PT wood fence supply + install (sub, Chris's Construction Est. #553 dated 2025-05-09): $37.00/LF
+- 4' gate supply + install dual latch + hinge (same sub): $200.00/each
+
+CATEGORIES STILL NEEDED (not yet in rate sheet — build from job history):
+Flooring, Tile, Framing, Windows, Exterior, Insulation, Concrete.
+
+WHEN ESTIMATING: Always flag if using expired supplier pricing. Always note which rate type is being used
+(Belmont direct vs supplier cost + markup vs sub cost + GC margin). Never present supplier cost to client
+as a Belmont rate without adding markup and labour.
+
+=== END RATE SHEET ===
+
 COMPANY: Belmont & Co. Fine Homes & Renovations
 LOCATION: Red Deer / Central Alberta, Canada
 STAGE: Growth phase — Feb 2026 launch, scaling aggressively
