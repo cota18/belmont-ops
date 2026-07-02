@@ -186,11 +186,14 @@ async def diagnostic():
 
     # ── TELEGRAM ──────────────────────────────────────────────────────────
     tg = os.getenv("TELEGRAM_TOKEN", "")
-    chat = os.getenv("JACOB_CHAT_ID", "")
+    chat = os.getenv("JACOB_CHAT_ID", "").strip().strip("'\"")
     if not tg:
         mark("telegram", "red", "TELEGRAM_TOKEN not set", "Set in Railway from BotFather")
     elif not chat:
         mark("telegram", "red", "JACOB_CHAT_ID not set", "Set Jacob's Telegram user ID")
+    elif not chat.isdigit():
+        mark("telegram", "red", f"JACOB_CHAT_ID looks malformed: {chat!r}",
+             "Check Railway value for stray quotes/whitespace — should be digits only")
     else:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -229,7 +232,7 @@ async def diagnostic():
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-JACOB_CHAT_ID = os.getenv("JACOB_CHAT_ID", "")
+JACOB_CHAT_ID = os.getenv("JACOB_CHAT_ID", "").strip().strip("'\"")
 
 # ─────────────────────────────────────────────
 # COMMAND + ROUTING TABLES
