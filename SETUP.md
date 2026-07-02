@@ -24,23 +24,22 @@ Run `/next` in Telegram to get the single next action with reasoning.
 
 ---
 
-## #1 — ZEP MEMORY (highest leverage, free tier)
+## #1 — MEM0 MEMORY (highest leverage, free tier)
 
 **Why first:** Without this, every conversation starts cold. The agent has no recall of past clients, decisions, lessons, or commitments. This is the single biggest force multiplier.
 
-**Cost:** Free. Zep Cloud free tier = 10K events/month + 1 user. Belmont fits easily.
+**Cost:** Free. Mem0 Cloud free tier = unlimited users, 10K memories. Belmont fits easily.
 
 **Steps:**
-1. Go to https://app.getzep.com/signup
-2. Sign up (Google sign-in works)
-3. Create a project (name it "belmont" or anything)
-4. Settings → **Project API Keys** → Create API Key
-5. Copy the key (starts with `z_...`)
-6. Tell Claude Code or set yourself in Railway:
+1. Go to https://app.mem0.ai
+2. Sign up
+3. Settings → **API Keys** → Create API Key
+4. Copy the key
+5. Tell Claude Code or set yourself in Railway:
    - Service: **pure-charisma** (Telegram handler)
-   - Variable name: `ZEP_API_KEY`
+   - Variable name: `MEM0_API_KEY`
    - Value: paste the key
-7. Railway will auto-redeploy. Confirm with `/diag` — `zep_memory` should turn green.
+6. Railway will auto-redeploy. Confirm with `/diag` — `memory` should turn green.
 
 **Result:** Agent now remembers every conversation. /promises, /decisions, /lessons, /wins, /network commands start populating with real data.
 
@@ -227,7 +226,7 @@ belmont-ops/
 ├── agents/
 │   └── prompts.py       # Orchestrator + 5 specialist prompts
 ├── memory/
-│   └── zep_memory.py    # Zep Cloud integration
+│   └── mem0_memory.py   # Mem0 Cloud integration
 ├── SETUP.md             # This file
 └── qbo_oauth.js         # Node OAuth helper (deprecated, use Playground instead)
 ```
